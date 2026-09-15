@@ -130,6 +130,14 @@ type App struct {
 	help       bool
 	hoverRow   int // diff row under the pointer, -1 when none
 
+	// In-diff find.
+	findField *reef.Field
+	findHits  []int // rows matching the query
+	findAt    int   // index into findHits, -1 when none
+
+	// Manifest filter.
+	fileFilter *reef.Field
+
 	// Where the panes ended up in the last frame. Recorded during layout
 	// rather than recomputed, so hit testing and tests cannot drift out of
 	// step with the drawing code.
@@ -212,6 +220,11 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 		a.recent = state.RememberRecent(repo.Root())
 	}
 	a.revsetInput = reef.NewField(revset)
+	a.findField = reef.NewField("")
+	a.findField.Placeholder = "find in diff"
+	a.fileFilter = reef.NewField("")
+	a.fileFilter.Placeholder = "filter files"
+	a.findAt = -1
 	if repo != nil {
 		a.adoptBackend(repo)
 	}

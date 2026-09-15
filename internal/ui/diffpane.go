@@ -79,13 +79,68 @@ func (a *App) layoutDiff(gtx layout.Context) {
 	if !a.prettyFocused() {
 		blockH = a.layoutTitleBlock(gtx)
 	}
-	a.diffBodyY = a.bodyTop + a.panelHeadH + 1 + blockH
+	findH := 0
+	if a.findField != nil && a.findField.Focused() {
+		findH = a.layoutFindBarHeight(gtx)
+	}
+	a.diffBodyY = a.bodyTop + a.panelHeadH + 1 + blockH + findH
 
-	if size.Y <= blockH {
+	if size.Y <= blockH+findH {
 		return
 	}
-	fill(gtx, image.Pt(0, blockH), image.Pt(size.X, size.Y-blockH), a.layoutDiffBody)
+	if findH > 0 {
+		fill(gtx, image.Pt(0, blockH), image.Pt(size.X, findH), a.layoutFindBar)
+	}
+	fill(gtx, image.Pt(0, blockH+findH), image.Pt(size.X, size.Y-blockH-findH), a.layoutDiffBody)
 }
+
+func (a *App) layoutFindBarHeight(gtx layout.Context) int {
+	return a.ui.FieldHeight(gtx) + gtx.Dp(4)
+}
+
+func (a *App) layoutFindBar(gtx layout.Context) {
+	size := gtx.Constraints.Max
+	pad := gtx.Dp(reef.PadInline)
+	fh := a.ui.FieldHeight(gtx)
+	// Field spans most of width, count on right.
+	fieldW := max(gtx.Dp(160), size.X-pad*2-gtx.Dp(140))
+	fill(gtx, image.Pt(pad, gtx.Dp(2)), image.Pt(fieldW, fh), func(gtx layout.Context) {
+		a.findField.Layout(gtx, a.ui.Theme)
+	})
+	// Match counter.
+	if q := a.findField.Text(); q != "" {
+		cnt := ""
+		if len(a.findHits) == 0 {
+			cnt = "0"
+		} else if a.findAt >= 0 {
+			cnt = fmt.Sprintf("%d/%d", a.findAt+1, len(a.findHits))
+		} else {
+			cnt = fmt.Sprintf("%d", len(a.findHits))
+		}
+		fit(gtx, image.Pt(pad+fieldW+gtx.Dp(reef.Sp3), gtx.Dp(2)+(fh-a.ui.TextRow(gtx, reef.SizeUI))/2), image.Pt(80, fh), func(gtx layout.Context) {
+			a.ui.Label(gtx, a.ui.P.Muted, cnt)
+		})
+	}
+	rightX := size.X - pad
+	// Close.
+	rightX -= a.controlRight(gtx, rightX, size.Y, findCloseTag{}, "CLOSE  ESC", a.ui.P.Muted, func() {
+		a.closeFind(gtx)
+	}) + gtx.Dp(reef.Sp3)
+	// Next / Prev when there are hits.
+	if len(a.findHits) > 0 {
+		rightX -= a.controlRight(gtx, rightX, size.Y, findNextTag{}, "NEXT  ⏎", a.ui.P.Action, func() {
+			a.jumpFind(1)
+		}) + gtx.Dp(reef.Sp3)
+		rightX -= a.controlRight(gtx, rightX, size.Y, findPrevTag{}, "PREV", a.ui.P.Muted, func() {
+			a.jumpFind(-1)
+		}) + gtx.Dp(reef.Sp3)
+	}
+	reef.HLine(gtx, size.X, size.Y-1, a.ui.P.RuleFaint)
+}
+
+type findCloseTag struct{}
+type findNextTag struct{}
+type findPrevTag struct{}
 
 // layoutTitleBlock draws the metadata for the change under review, in the
 // manner of the title block on a drawing: short capitalised field names with
@@ -849,15 +904,6 @@ func (a *App) drawCode(gtx layout.Context, r Row, cell image.Point, row, index i
 	ui := a.ui
 	cells := buildCells(r.Line.Text, r.Spans, r.Line.Segments)
 
-	// What is selected is tinted before the text goes down, so the code stays
-	// on top of it rather than being reversed out.
-	if c0, c1, ok := a.sel.Cols(index); ok {
-		c1 = min(c1, len(cells.runes))
-		if c1 > c0 {
-			reef.FillRect(gtx, image.Rect(c0*cell.X, 0, c1*cell.X, row), ui.P.TextSel)
-		}
-	}
-
 	// Background for the parts of the line that actually differ.
 	for i := 0; i < len(cells.hot); {
 		if !cells.hot[i] {
@@ -870,6 +916,43 @@ func (a *App) drawCode(gtx layout.Context, r Row, cell image.Point, row, index i
 		}
 		reef.FillRect(gtx, image.Rect(i*cell.X, 0, j*cell.X, row), hotColor)
 		i = j
+	}
+
+	// Find matches.
+	if ranges := a.findRanges(index); len(ranges) > 0 {
+		isCur := a.isFindCurrent(index)
+		for _, rng := range ranges {
+			c0, c1 := rng[0], rng[1]
+			c0 = clamp(c0, 0, len(cells.runes))
+			c1 = clamp(c1, 0, len(cells.runes))
+			if c1 > c0 {
+				col := ui.P.WarnBg
+				if isCur {
+					col = ui.P.Warn
+				}
+				reef.FillRect(gtx, image.Rect(c0*cell.X, 0, c1*cell.X, row), col)
+			}
+		}
+		// Current match gets an edge for distinction.
+		if isCur {
+			for _, rng := range ranges {
+				c0, c1 := rng[0], rng[1]
+				c0 = clamp(c0, 0, len(cells.runes))
+				c1 = clamp(c1, 0, len(cells.runes))
+				if c1 > c0 {
+					reef.Stroke(gtx, image.Rect(c0*cell.X, 0, c1*cell.X, row), ui.P.Warn)
+				}
+			}
+		}
+	}
+
+	// What is selected is tinted before the text goes down, so the code stays
+	// on top of it rather than being reversed out. Drawn after find so selection remains visible.
+	if c0, c1, ok := a.sel.Cols(index); ok {
+		c1 = min(c1, len(cells.runes))
+		if c1 > c0 {
+			reef.FillRect(gtx, image.Rect(c0*cell.X, 0, c1*cell.X, row), ui.P.TextSel)
+		}
 	}
 
 	for i := 0; i < len(cells.runes); {
@@ -957,6 +1040,39 @@ func (a *App) drawCodeWrapped(gtx layout.Context, r Row, cell image.Point, rowH,
 		return uint8(highlight.Plain)
 	}
 
+	findRgs := a.findRanges(index)
+	isCurRow := a.isFindCurrent(index)
+	// helper to draw find highlights intersecting [ls, le) at y offset already pushed
+	drawFind := func(ls, le, offX int) {
+		if len(findRgs) == 0 {
+			return
+		}
+		for _, rng := range findRgs {
+			fs, fe := rng[0], rng[1]
+			// intersect with this visual line's displayed range
+			a0 := max(fs, ls)
+			b0 := min(fe, le)
+			if b0 <= a0 {
+				continue
+			}
+			col := ui.P.WarnBg
+			if isCurRow {
+				col = ui.P.Warn
+			}
+			reef.FillRect(gtx, image.Rect((a0-offX)*cell.X, 0, (b0-offX)*cell.X, rowH), col)
+		}
+		if isCurRow {
+			for _, rng := range findRgs {
+				fs, fe := rng[0], rng[1]
+				a0 := max(fs, ls)
+				b0 := min(fe, le)
+				if b0 <= a0 {
+					continue
+				}
+				reef.Stroke(gtx, image.Rect((a0-offX)*cell.X, 0, (b0-offX)*cell.X, rowH), ui.P.Warn)
+			}
+		}
+	}
 	for k, be := range bounds {
 		s, e := be[0], be[1]
 		s = clamp(s, 0, n)
@@ -967,11 +1083,6 @@ func (a *App) drawCodeWrapped(gtx layout.Context, r Row, cell image.Point, rowH,
 		off := op.Offset(image.Pt(0, k*rowH)).Push(gtx.Ops)
 
 		if !truncated[k] {
-			if selOk && sc1 > sc0 {
-				if a0, b0 := max(sc0, s), min(sc1, e); b0 > a0 {
-					reef.FillRect(gtx, image.Rect((a0-s)*cell.X, 0, (b0-s)*cell.X, rowH), ui.P.TextSel)
-				}
-			}
 			for i := s; i < e; {
 				if !cells.hot[i] {
 					i++
@@ -984,6 +1095,12 @@ func (a *App) drawCodeWrapped(gtx layout.Context, r Row, cell image.Point, rowH,
 				reef.FillRect(gtx, image.Rect((i-s)*cell.X, 0, (j-s)*cell.X, rowH), hotColor)
 				i = j
 			}
+			drawFind(s, e, s)
+			if selOk && sc1 > sc0 {
+				if a0, b0 := max(sc0, s), min(sc1, e); b0 > a0 {
+					reef.FillRect(gtx, image.Rect((a0-s)*cell.X, 0, (b0-s)*cell.X, rowH), ui.P.TextSel)
+				}
+			}
 			drawRuns(s, e, 0)
 			off.Pop()
 			continue
@@ -993,16 +1110,6 @@ func (a *App) drawCodeWrapped(gtx layout.Context, r Row, cell image.Point, rowH,
 		// shown.
 		shown := max(0, min(cols-1, e-s))
 		dispEnd := s + shown
-		if selOk && sc1 > sc0 {
-			if a0, b0 := max(sc0, s), min(sc1, dispEnd); b0 > a0 {
-				reef.FillRect(gtx, image.Rect((a0-s)*cell.X, 0, (b0-s)*cell.X, rowH), ui.P.TextSel)
-			}
-			// The ellipsis stands in for the hidden tail: it takes the
-			// selection tint when the selection reaches past what is shown.
-			if sc1 > s+shown && sc0 < e {
-				reef.FillRect(gtx, image.Rect(shown*cell.X, 0, cols*cell.X, rowH), ui.P.TextSel)
-			}
-		}
 		for i := s; i < dispEnd; {
 			if !cells.hot[i] {
 				i++
@@ -1017,6 +1124,30 @@ func (a *App) drawCodeWrapped(gtx layout.Context, r Row, cell image.Point, rowH,
 		}
 		if anyHot(s+shown, e) {
 			reef.FillRect(gtx, image.Rect(shown*cell.X, 0, cols*cell.X, rowH), hotColor)
+		}
+		drawFind(s, dispEnd, s)
+		// If find intersects hidden tail, highlight ellipsis.
+		if len(findRgs) > 0 {
+			for _, rng := range findRgs {
+				if rng[0] < e && rng[1] > dispEnd {
+					col := ui.P.WarnBg
+					if isCurRow {
+						col = ui.P.Warn
+					}
+					reef.FillRect(gtx, image.Rect(shown*cell.X, 0, cols*cell.X, rowH), col)
+					break
+				}
+			}
+		}
+		if selOk && sc1 > sc0 {
+			if a0, b0 := max(sc0, s), min(sc1, dispEnd); b0 > a0 {
+				reef.FillRect(gtx, image.Rect((a0-s)*cell.X, 0, (b0-s)*cell.X, rowH), ui.P.TextSel)
+			}
+			// The ellipsis stands in for the hidden tail: it takes the
+			// selection tint when the selection reaches past what is shown.
+			if sc1 > s+shown && sc0 < e {
+				reef.FillRect(gtx, image.Rect(shown*cell.X, 0, cols*cell.X, rowH), ui.P.TextSel)
+			}
 		}
 		drawRuns(s, dispEnd, 0)
 		if cols >= 1 {

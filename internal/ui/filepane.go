@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"gioui.org/font"
+	"gioui.org/io/key"
 	"gioui.org/layout"
+	"gioui.org/op"
 
 	"github.com/chromafish/check/internal/vcs"
 
@@ -25,14 +27,56 @@ func (a *App) layoutFiles(gtx layout.Context) {
 		return
 	}
 	size := gtx.Constraints.Max
+	// Manifest filter bar, when active or non-empty.
+	filterH := 0
+	if a.fileFilter != nil && (a.fileFilter.Focused() || a.fileFilter.Text() != "") {
+		filterH = a.ui.FieldHeight(gtx) + gtx.Dp(4)
+		fill(gtx, image.Pt(0, 0), image.Pt(size.X, filterH), func(gtx layout.Context) {
+			fh := a.ui.FieldHeight(gtx)
+			pad := gtx.Dp(reef.PadInline)
+			fieldW := max(gtx.Dp(120), size.X-pad*2-gtx.Dp(90))
+			// field
+			sub := gtx
+			sub.Constraints = layout.Exact(image.Pt(fieldW, fh))
+			off := op.Offset(image.Pt(pad, (filterH-fh)/2)).Push(gtx.Ops)
+			a.fileFilter.Layout(sub, a.ui.Theme)
+			off.Pop()
+			// Clear control when filtered.
+			if a.fileFilter.Text() != "" {
+				rightX := size.X - pad
+				a.controlRight(gtx, rightX, filterH, fileFilterClearTag{}, "CLEAR  ESC", a.ui.P.Muted, func() {
+					a.fileFilter.SetText("")
+					a.fileFilter.Defocus(gtx)
+					gtx.Execute(key.FocusCmd{Tag: nil})
+				})
+			}
+		})
+		// Underline
+		reef.HLine(gtx, size.X, filterH-1, a.ui.P.RuleFaint)
+	}
+	bodyH := size.Y - filterH
+	if bodyH <= 0 {
+		return
+	}
+	visible := a.visibleFiles()
+	if len(visible) == 0 {
+		fill(gtx, image.Pt(0, filterH), image.Pt(size.X, bodyH), func(gtx layout.Context) {
+			a.placeholder(gtx, "NO MATCH")
+		})
+		return
+	}
 	row := a.ui.Row(gtx)
-
-	a.fileList.Layout(gtx, len(a.files), func(gtx layout.Context, i int) layout.Dimensions {
-		gtx.Constraints = layout.Exact(image.Pt(size.X, row))
-		a.fileRow(gtx, i)
-		return layout.Dimensions{Size: image.Pt(size.X, row)}
+	fill(gtx, image.Pt(0, filterH), image.Pt(size.X, bodyH), func(gtx layout.Context) {
+		a.fileList.Layout(gtx, len(visible), func(gtx layout.Context, i int) layout.Dimensions {
+			gtx.Constraints = layout.Exact(image.Pt(size.X, row))
+			idx := visible[i]
+			a.fileRow(gtx, idx)
+			return layout.Dimensions{Size: image.Pt(size.X, row)}
+		})
 	})
 }
+
+type fileFilterClearTag struct{}
 
 func (a *App) fileRow(gtx layout.Context, i int) {
 	ui := a.ui
@@ -222,6 +266,10 @@ func (a *App) syncFileSel() {
 		return
 	}
 	a.fileSel = i
-	a.scrollList(&a.fileList, i)
+	if pos := a.visiblePos(i); pos >= 0 {
+		a.scrollList(&a.fileList, pos)
+	} else {
+		// File hidden by filter; don't scroll hidden list.
+	}
 	a.lightFile(i)
 }

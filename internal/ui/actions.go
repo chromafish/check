@@ -22,9 +22,20 @@ func (a *App) goTo(where func(at, n int) int) {
 			a.scrollList(&a.revList, a.revSel)
 		}
 	case PaneFiles:
-		if n := len(a.files); n > 0 {
-			a.selectFile(clamp(where(a.fileSel, n), 0, n-1))
-			a.scrollList(&a.fileList, a.fileSel)
+		vis := a.visibleFiles()
+		if n := len(vis); n > 0 {
+			// Map current absolute to visible index.
+			cur := 0
+			for i, v := range vis {
+				if v == a.fileSel {
+					cur = i
+					break
+				}
+			}
+			nextVis := clamp(where(cur, n), 0, n-1)
+			abs := vis[nextVis]
+			a.selectFile(abs)
+			a.scrollList(&a.fileList, nextVis)
 		}
 	case PaneDiff:
 		if a.diff == nil {
@@ -75,13 +86,25 @@ func (a *App) stepFile(delta int) {
 	if len(a.files) == 0 {
 		return
 	}
-	next := clamp(a.fileSel+delta, 0, len(a.files)-1)
-	if next == a.fileSel {
+	vis := a.visibleFiles()
+	if len(vis) == 0 {
+		a.note("no matching files")
+		return
+	}
+	curVis := 0
+	for i, v := range vis {
+		if v == a.fileSel {
+			curVis = i
+			break
+		}
+	}
+	nextVis := clamp(curVis+delta, 0, len(vis)-1)
+	if vis[nextVis] == a.fileSel {
 		a.note("no more files")
 		return
 	}
-	a.selectFile(next)
-	a.scrollList(&a.fileList, a.fileSel)
+	a.selectFile(vis[nextVis])
+	a.scrollList(&a.fileList, nextVis)
 	a.focus = PaneDiff
 }
 

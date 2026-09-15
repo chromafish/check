@@ -275,9 +275,9 @@ func (a *App) statusLeft() string {
 		return fmt.Sprintf("j/k move · enter files · / %s · r refresh · ? keys",
 			strings.ToLower(a.backend.QueryLabel))
 	case PaneFiles:
-		return "j/k move · enter diff · v viewed · ? keys"
+		return "j/k move · f filter · u unread · enter diff · v viewed · ? keys"
 	default:
-		return "j/k line · space page · c comment · [ ] file · v viewed · ? keys"
+		return "j/k line · f find · u unread · o open · c comment · [ ] file · ? keys"
 	}
 }
 
@@ -302,6 +302,9 @@ func (a *App) handleKeys(gtx layout.Context) {
 		a.sonda.filter.Update(gtx)
 		editing = editing || a.sonda.filter.Focused()
 	}
+	findEditing := a.updateFind(gtx)
+	fileEditing := a.updateFileFilter(gtx)
+	editing = editing || findEditing || fileEditing
 
 	filters := []event.Filter{
 		key.Filter{Name: key.NameEscape},
@@ -351,7 +354,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 // as a list so the filters and the help sheet cannot drift apart.
 var commandKeys = []key.Name{
 	"J", "K", "H", "L", "G", "V", "C", "D", "R", "T", "N", "P", "Y",
-	"Z", "E", "S", "X", "W", "1", "2",
+	"Z", "E", "S", "X", "W", "1", "2", "F", "U", "O",
 	// The settings sheet's own keys. Outside it they are bound to nothing, and
 	// a key bound to nothing is not a key another pane gets to reinterpret.
 	",", "-", "=",
@@ -380,6 +383,10 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	}
 	if cmd && ke.Name == "," {
 		a.toggleSettings()
+		return
+	}
+	if cmd && ke.Name == "F" {
+		a.startFind(gtx)
 		return
 	}
 
@@ -414,11 +421,25 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	if editing {
 		switch ke.Name {
 		case key.NameEscape:
+			if a.findField != nil && a.findField.Focused() {
+				a.closeFind(gtx)
+				return
+			}
+			if a.fileFilter != nil && a.fileFilter.Focused() {
+				a.clearFileFilter(gtx)
+				return
+			}
 			a.revsetInput.Defocus(gtx)
 			a.cancelDraft(gtx)
 		case key.NameReturn, key.NameEnter:
 			if cmd {
 				a.saveDraft(gtx)
+			}
+			// Find uses submit to jump; handled in updateFind.
+			// File filter keeps text on Enter.
+			if a.fileFilter != nil && a.fileFilter.Focused() {
+				a.fileFilter.Defocus(gtx)
+				gtx.Execute(key.FocusCmd{Tag: nil})
 			}
 		}
 		return
@@ -426,6 +447,14 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 
 	switch ke.Name {
 	case key.NameEscape:
+		if a.fileFilter != nil && a.fileFilter.Text() != "" {
+			a.clearFileFilter(gtx)
+			return
+		}
+		if a.findField != nil && a.findField.Text() != "" {
+			a.closeFind(gtx)
+			return
+		}
 		a.help = false
 		a.notesOpen = false
 		a.status = ""
@@ -544,6 +573,24 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		a.toggleSplit()
 	case "W":
 		a.toggleWrap()
+	case "F":
+		if a.focus == PaneFiles {
+			a.startFileFilter(gtx)
+		} else {
+			a.startFind(gtx)
+		}
+	case "U":
+		if shift {
+			a.jumpUnread(-1)
+		} else {
+			a.jumpUnread(1)
+		}
+	case "O":
+		if shift {
+			a.jumpOpen(-1)
+		} else {
+			a.jumpOpen(1)
+		}
 	}
 }
 
@@ -589,8 +636,12 @@ var helpSheet = [][2]string{
 	{"[ ]", "previous / next file"},
 	{"SHIFT-[ SHIFT-]", "previous / next hunk"},
 	{"/", "edit the revision query"},
+	{"F / CMD-F", "find in diff (⏎ next, ESC close)"},
+	{"FILE: F", "filter manifest (ESC clear)"},
 	{"R / CMD-R", "reload from the repository"},
 	{"V / SHIFT-V", "mark file viewed / all files viewed"},
+	{"U / SHIFT-U", "next / previous unread file"},
+	{"O / SHIFT-O", "next / previous open note"},
 	{"C", "comment on the current line"},
 	{"CMD-ENTER", "save comment"},
 	{"D", "delete comment under the cursor"},

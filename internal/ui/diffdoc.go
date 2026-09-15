@@ -1222,6 +1222,7 @@ func (a *App) rebuildRows() {
 	a.lastFirst = a.diffList.Position.First
 	a.sel.Anchor.Row, a.sel.Head.Row = doc.locate(anchor), doc.locate(head)
 	doc.Pairs, doc.pairOf = nil, nil
+	a.rebuildFind()
 }
 
 // spot is a place in the change that outlives the sheet it was read from:
@@ -1359,6 +1360,7 @@ func (a *App) rebuildFileWith(i int, comments []state.Comment) {
 	a.sel.Anchor.Row = shiftRow(a.sel.Anchor.Row, start, end, delta)
 	a.sel.Head.Row = shiftRow(a.sel.Head.Row, start, end, delta)
 	doc.Pairs, doc.pairOf = nil, nil
+	a.rebuildFind()
 }
 
 // shiftRow moves a row index across a splice: one before the rebuilt file stays
