@@ -71,6 +71,48 @@ func prettyBlockPadding(gtx layout.Context, b *PrettyBlock) (int, int) {
 	}
 }
 
+// prettyHotForText builds a per-rune hot map from diff segments (byte offsets).
+// Same logic as `internal/diffparse/refine.go` segments and `internal/ui/diffpane.go:1069` buildCells hot.
+func prettyHotForText(text string, segs []diffparse.Segment) []bool {
+	if len(segs) == 0 || text == "" {
+		return nil
+	}
+	runes := []rune(text)
+	hot := make([]bool, len(runes))
+	// Map byte offsets to rune indices
+	byteOff := 0
+	for i, r := range runes {
+		for _, s := range segs {
+			if s.Changed && byteOff >= s.Start && byteOff < s.End {
+				hot[i] = true
+				break
+			}
+		}
+		byteOff += len(string(r))
+	}
+	// If nothing hot, return nil to avoid extra work
+	for _, h := range hot {
+		if h {
+			return hot
+		}
+	}
+	return nil
+}
+
+// prettyOldHeight is the height of the old-text del block shown above a modified pretty block.
+func (a *App) prettyOldHeight(gtx layout.Context, b *PrettyBlock, w int) int {
+	if b.OldText == "" || b.Change != ChangeAdded {
+		return 0
+	}
+	lh := a.ui.TextRow(gtx, reef.SizeBody)
+	cell := max(1, a.ui.Cell(gtx, reef.SizeBody, false).X)
+	cols := max(1, w/cell)
+	lines := wrapPrettyInlines([]Inline{{Text: b.OldText}}, cols)
+	h := max(1, len(lines)) * lh
+	top, bottom := prettyBlockPadding(gtx, &PrettyBlock{Kind: BlockPara})
+	return top + h + bottom + gtx.Dp(reef.Sp2)
+}
+
 // prettyHeight is the exact height drawPretty consumes. Keeping all block
 // padding here, instead of relying on the list's ordinary row pitch, prevents
 // tall tables and code listings from collapsing their children onto one line.
@@ -83,32 +125,34 @@ func (a *App) prettyHeight(gtx layout.Context, doc *DiffDoc, i int, width, row i
 	_, w := a.prettyContentBounds(gtx, width)
 	top, bottom := prettyBlockPadding(gtx, b)
 
+	var base int
 	switch b.Kind {
 	case BlockCode:
-		return top + a.prettyCodeHeight(gtx, b, w) + bottom
+		base = top + a.prettyCodeHeight(gtx, b, w) + bottom
 	case BlockHeading:
 		sz := headingSize(b.Level)
 		cell := max(1, a.ui.Cell(gtx, sz, false).X)
 		lines := wrapPrettyInlines(b.Inlines, max(1, w/cell))
-		return top + max(1, len(lines))*a.ui.TextRow(gtx, sz) + bottom
+		base = top + max(1, len(lines))*a.ui.TextRow(gtx, sz) + bottom
 	case BlockFrontmatter:
-		return top + a.prettyFrontmatterHeight(gtx, b, w) + bottom
+		base = top + a.prettyFrontmatterHeight(gtx, b, w) + bottom
 	case BlockTable:
-		return top + a.prettyTableMetrics(gtx, b, w).total + bottom
+		base = top + a.prettyTableMetrics(gtx, b, w).total + bottom
 	case BlockHR:
-		return top + 1 + bottom
+		base = top + 1 + bottom
 	case BlockList:
-		return top + a.prettyListHeight(gtx, b, w) + bottom
+		base = top + a.prettyListHeight(gtx, b, w) + bottom
 	case BlockQuote:
 		inset := gtx.Dp(reef.Sp6)
 		cell := max(1, a.ui.Cell(gtx, reef.SizeBody, false).X)
 		lines := wrapPrettyInlines(b.Inlines, max(1, (w-inset)/cell))
-		return top + max(1, len(lines))*a.ui.TextRow(gtx, reef.SizeBody) + bottom
+		base = top + max(1, len(lines))*a.ui.TextRow(gtx, reef.SizeBody) + bottom
 	default:
 		cell := max(1, a.ui.Cell(gtx, reef.SizeBody, false).X)
 		lines := wrapPrettyInlines(b.Inlines, max(1, w/cell))
-		return top + max(1, len(lines))*a.ui.TextRow(gtx, reef.SizeBody) + bottom
+		base = top + max(1, len(lines))*a.ui.TextRow(gtx, reef.SizeBody) + bottom
 	}
+	return base + a.prettyOldHeight(gtx, b, w)
 }
 
 func headingSize(level int) unit.Sp {
@@ -285,6 +329,108 @@ func (a *App) drawPretty(gtx layout.Context, doc *DiffDoc, i int, cell image.Poi
 	b := r.Pretty
 	cursor := i == doc.Cursor && a.focus == PaneDiff
 
+	// For modified paras/headings (not lists), show old (Del) stacked above new (Add) with hot for exact words - like code.
+	if b.Kind != BlockList && b.OldText != "" && b.Change == ChangeAdded {
+		_, wOld := a.prettyContentBounds(gtx, size.X)
+		oldH := a.prettyOldHeight(gtx, b, wOld)
+		if oldH > 0 && oldH < size.Y {
+			// Old part - Del
+			reef.FillRect(gtx, image.Rect(0, 0, size.X, oldH), ui.P.DelBg)
+			reef.FillRect(gtx, image.Rect(0, 0, 2, oldH), ui.P.DelGutter)
+			markerH := ui.CodeRow(gtx)
+			gut := a.prettyGutterWidth(gtx)
+			mx := max(gtx.Dp(reef.Sp1), (gut-cell.X)/2)
+			off := op.Offset(image.Pt(0, gtx.Dp(reef.Sp1))).Push(gtx.Ops)
+			a.codeText(gtx, mx, markerH, gut, reef.WeightLabel, ui.P.DelFg, "−")
+			off.Pop()
+			xOld, wOld2 := a.prettyContentBounds(gtx, size.X)
+			topOld, _ := prettyBlockPadding(gtx, &PrettyBlock{Kind: BlockPara})
+			lh := ui.TextRow(gtx, reef.SizeBody)
+			cellBody := max(1, ui.Cell(gtx, reef.SizeBody, false).X)
+			cols := max(1, wOld2/cellBody)
+			oldInlines := []Inline{{Text: b.OldText}}
+			lines := wrapPrettyInlines(oldInlines, cols)
+			hotForOld := b.OldHot
+			if hotForOld == nil && len(b.OldSegs) > 0 {
+				hotForOld = prettyHotForText(b.OldText, b.OldSegs)
+			}
+			globalBase := 0
+			for li, line := range lines {
+				y := topOld + li*lh
+				if hotForOld != nil {
+					for ri := range line {
+						gi := globalBase + ri
+						if gi < len(hotForOld) && hotForOld[gi] {
+							rx := xOld + ri*cellBody
+							reef.FillRect(gtx, image.Rect(rx, y, rx+cellBody, y+lh), ui.P.DelBgHot)
+						}
+					}
+				}
+				a.drawPrettyLine(gtx, line, xOld, y, wOld2, lh, reef.SizeBody, font.Normal, font.Regular, ui.P.Fg)
+				globalBase += len(line)
+			}
+			if r.Noted {
+				reef.VLine(gtx, gut-gtx.Dp(reef.Sp3), oldH, ui.P.Action)
+			} else {
+				reef.VLine(gtx, gut-gtx.Dp(reef.Sp3), oldH, ui.P.RuleFaint)
+			}
+			reef.FillRect(gtx, image.Rect(gut, oldH-1, size.X, oldH), ui.P.RuleFaint)
+			offNew := op.Offset(image.Pt(0, oldH)).Push(gtx.Ops)
+			newSize := image.Pt(size.X, size.Y-oldH)
+			reef.FillRect(gtx, image.Rect(0, 0, newSize.X, newSize.Y), ui.P.AddBg)
+			reef.FillRect(gtx, image.Rect(0, 0, 2, newSize.Y), ui.P.AddGutter)
+			off2 := op.Offset(image.Pt(0, gtx.Dp(reef.Sp1))).Push(gtx.Ops)
+			a.codeText(gtx, mx, markerH, gut, reef.WeightLabel, ui.P.AddFg, "+")
+			off2.Pop()
+			if r.Noted {
+				reef.VLine(gtx, gut-gtx.Dp(reef.Sp3), newSize.Y, ui.P.Action)
+			} else {
+				reef.VLine(gtx, gut-gtx.Dp(reef.Sp3), newSize.Y, ui.P.RuleFaint)
+			}
+			x, w := a.prettyContentBounds(gtx, size.X)
+			if w > 0 {
+				top, _ := prettyBlockPadding(gtx, b)
+				switch b.Kind {
+				case BlockFrontmatter:
+					a.drawFrontmatter(gtx, b, x, w, top)
+				case BlockHeading:
+					a.drawHeading(gtx, b, x, w, top, newSize.Y)
+				case BlockPara:
+					if b.Segments != nil {
+						a.drawParaWithHot(gtx, b, x, w, top)
+					} else {
+						a.drawParaLike(gtx, b, x, w, top)
+					}
+				case BlockQuote, BlockList:
+					a.drawParaLike(gtx, b, x, w, top)
+				case BlockCode:
+					a.drawPrettyCode(gtx, b, x, w, top, cell, i, ui.P.AddBgHot)
+				case BlockHR:
+					reef.FillRect(gtx, image.Rect(x, top, x+w, top+1), ui.P.Rule)
+				case BlockTable:
+					a.drawPrettyTable(gtx, b, x, w, top)
+				default:
+					a.drawParaLike(gtx, b, x, w, top)
+				}
+			}
+			if cursor {
+				reef.HLine(gtx, size.X, 0, ui.P.Focus)
+				reef.HLine(gtx, size.X, size.Y-1, ui.P.Focus)
+			}
+			gut2 := a.prettyGutterWidth(gtx)
+			a.hoverable(gtx, image.Rect(0, 0, gut2, size.Y), diffTag{row: i, gutter: true}, i, func() {
+				doc.Cursor = i
+				a.focus = PaneDiff
+				a.after(a.startComment)
+			})
+			if size.X > gut2 {
+				a.selectArea(gtx, image.Rect(gut2, 0, size.X, size.Y), i, gut2, cell)
+			}
+			offNew.Pop()
+			return
+		}
+	}
+
 	bg, hot, marker, markerColor := ui.P.Bg, ui.P.Bg, "", ui.P.Faint
 	gutterColor := reef.ColorNRGBA{}
 	switch b.Change {
@@ -341,7 +487,13 @@ func (a *App) drawPretty(gtx layout.Context, doc *DiffDoc, i int, cell image.Poi
 		a.drawFrontmatter(gtx, b, x, w, top)
 	case BlockHeading:
 		a.drawHeading(gtx, b, x, w, top, size.Y)
-	case BlockPara, BlockQuote, BlockList:
+	case BlockPara:
+		if b.Segments != nil && b.Change == ChangeAdded {
+			a.drawParaWithHot(gtx, b, x, w, top)
+		} else {
+			a.drawParaLike(gtx, b, x, w, top)
+		}
+	case BlockQuote, BlockList:
 		a.drawParaLike(gtx, b, x, w, top)
 	case BlockCode:
 		a.drawPrettyCode(gtx, b, x, w, top, cell, i, hot)
@@ -476,8 +628,32 @@ func (a *App) drawParaLike(gtx layout.Context, b *PrettyBlock, x, w, y int) {
 			ui.TextAt(gtx, reef.Run{Size: reef.SizeBody, Weight: reef.WeightLabel, Color: ui.P.Action}, 0, lh, prefixW-cell/2, prefix)
 			off.Pop()
 			lines := wrapPrettyInlines(item, cols)
+			isAdded := idx < len(b.ItemChange) && b.ItemChange[idx] == ChangeAdded
+			// Per-item tint like code, avoids tinting whole list when only one bullet changed
+			if isAdded {
+				itemH := max(1, len(lines)) * lh
+				reef.FillRect(gtx, image.Rect(x, cy, x+w, cy+itemH), ui.P.AddBg)
+			}
+			var hot []bool
+			if isAdded && idx < len(b.ItemHot) && b.ItemHot[idx] != nil {
+				hot = b.ItemHot[idx]
+			} else if isAdded && idx < len(b.ItemSegs) {
+				hot = prettyHotForText(inlinesText(item), b.ItemSegs[idx])
+			}
+			offItem := 0
 			for li, line := range lines {
-				a.drawPrettyLine(gtx, line, x+prefixW, cy+li*lh, w-prefixW, lh, reef.SizeBody, font.Normal, font.Regular, ui.P.Fg)
+				yLine := cy + li*lh
+				if hot != nil {
+					for ri := range line {
+						gi := offItem + ri
+						if gi < len(hot) && hot[gi] {
+							rx := x + prefixW + ri*cell
+							reef.FillRect(gtx, image.Rect(rx, yLine, rx+cell, yLine+lh), ui.P.AddBgHot)
+						}
+					}
+				}
+				a.drawPrettyLine(gtx, line, x+prefixW, yLine, w-prefixW, lh, reef.SizeBody, font.Normal, font.Regular, ui.P.Fg)
+				offItem += len(line)
 			}
 			cy += max(1, len(lines))*lh + gap
 		}
@@ -495,6 +671,44 @@ func (a *App) drawParaLike(gtx layout.Context, b *PrettyBlock, x, w, y int) {
 		lines := wrapPrettyInlines(b.Inlines, max(1, w/cell))
 		for li, line := range lines {
 			a.drawPrettyLine(gtx, line, x, y+li*lh, w, lh, reef.SizeBody, font.Normal, font.Regular, ui.P.Fg)
+		}
+	}
+}
+
+// drawParaWithHot draws a paragraph with exact-change hot highlights, word-level.
+// Reuses same word-level logic as code via prettyHotForPretty so pretty and code share logic.
+func (a *App) drawParaWithHot(gtx layout.Context, b *PrettyBlock, x, w, y int) {
+	ui := a.ui
+	lh := ui.TextRow(gtx, reef.SizeBody)
+	cell := max(1, ui.Cell(gtx, reef.SizeBody, false).X)
+	cols := max(1, w/cell)
+	lines := wrapPrettyInlines(b.Inlines, cols)
+	hot := b.Hot
+	if hot == nil && len(b.Segments) > 0 {
+		text := inlinesText(b.Inlines)
+		hot = prettyHotForText(text, b.Segments)
+	}
+	// Map from global rune index to hot; lines are sequential slices of the same runes
+	runes := inlineRunes(b.Inlines)
+	// Build index map: each rune in runes corresponds to hot index
+	off := 0
+	for li, line := range lines {
+		yLine := y + li*lh
+		// Hot background for this visual line, like `drawCode` `hotColor`
+		if hot != nil {
+			for ri := range line {
+				gi := off + ri
+				if gi < len(hot) && hot[gi] {
+					rx := x + ri*cell
+					reef.FillRect(gtx, image.Rect(rx, yLine, rx+cell, yLine+lh), ui.P.AddBgHot)
+				}
+			}
+		}
+		a.drawPrettyLine(gtx, line, x, yLine, w, lh, reef.SizeBody, font.Normal, font.Regular, ui.P.Fg)
+		off += len(line)
+		// Wrap skips collapsed spaces, but for plain text off matches; for safety clamp
+		if off > len(runes) {
+			off = len(runes)
 		}
 	}
 }

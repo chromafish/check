@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -72,6 +73,14 @@ type PrettyBlock struct {
 	StartLine int
 	EndLine   int
 	Change    ChangeKind
+	OldText   string              // for modified blocks: the removed line's raw text (for reference)
+	Segments  []diffparse.Segment // changed segments for this block's new text (from diff refine, kept for code)
+	OldSegs   []diffparse.Segment // changed segments for OldText
+	Hot       []bool              // per-rune hot for new pretty text, word-level (like code's hot)
+	OldHot    []bool              // per-rune hot for OldText
+	ItemChange []ChangeKind // per-item change for lists, same length as Items
+	ItemSegs   [][]diffparse.Segment // per-item segments for exact highlight
+	ItemHot    [][]bool // per-item hot, word-level
 	// For frontmatter table:
 	Frontmatter []FrontmatterEntry
 }
@@ -621,48 +630,82 @@ func markChanges(doc *PrettyDoc, file *diffparse.File) {
 		return
 	}
 	var adds []prettyInterval
-	var dels []prettyInterval
-	for _, h := range file.Hunks {
-		if h.NewCount > 0 {
-			adds = append(adds, prettyInterval{s: h.NewStart, e: h.NewStart + h.NewCount})
-		}
-		if h.OldCount > 0 {
-			dels = append(dels, prettyInterval{s: h.OldStart, e: h.OldStart + h.OldCount})
-		}
-	}
-	// For deletes, we need to map Old line numbers to New coordinates for overlay on After doc.
-	// Simple approach: if file had insertions before, Old numbers will be shifted vs New.
-	// We approximate by converting Old interval to approximate New interval by adjusting by cumulative delta up to that hunk.
-	// Compute delta per hunk: NewStart - OldStart (net added before this hunk). For each del interval, map s/e by adding delta.
-	// This gives more accurate overlay after earlier hunks.
 	var mappedDels []prettyInterval
-	// Better per hunk: for each hunk, delta = h.NewStart - h.OldStart
-	// So mapped del interval = [OldStart+delta, OldStart+delta + OldCount)
-	// But if OldCount is for deletion, its size may not equal NewCount; we still map start, length stays OldCount
-	// This will place deletions near their New position.
 	for _, h := range file.Hunks {
-		if h.OldCount > 0 {
-			delta := h.NewStart - h.OldStart
-			mappedDels = append(mappedDels, prettyInterval{s: h.OldStart + delta, e: h.OldStart + delta + h.OldCount})
+		delta := h.NewStart - h.OldStart
+		for _, l := range h.Lines {
+			switch l.Kind {
+			case diffparse.Added:
+				if l.NewNum > 0 {
+					adds = append(adds, prettyInterval{s: l.NewNum, e: l.NewNum + 1})
+				}
+			case diffparse.Removed:
+				if l.OldNum > 0 {
+					mappedDels = append(mappedDels, prettyInterval{s: l.OldNum + delta, e: l.OldNum + delta + 1})
+				}
+			}
 		}
 	}
 	// Use adds vs mappedDels for determining block change.
 	// If a block overlaps any add interval -> Added, else if overlaps any mapped del interval -> Removed, else Context.
+	// For added blocks that are modifications, also store the old text and segments for inline diff / old view.
 	for i := range doc.Blocks {
 		b := &doc.Blocks[i]
 		if b.Kind == BlockFrontmatter {
 			b.Change = ChangeContext
 			continue
 		}
+		// Lists are handled per-item to avoid tinting the whole list when only one bullet changed
+		if b.Kind == BlockList {
+			b.Change = ChangeContext
+			b.ItemChange = make([]ChangeKind, len(b.Items))
+			b.ItemSegs = make([][]diffparse.Segment, len(b.Items))
+			b.ItemHot = make([][]bool, len(b.Items))
+			for idx, item := range b.Items {
+				snippet := inlinesText(item)
+				snippet = strings.TrimSpace(snippet)
+				if len(snippet) > 30 {
+					snippet = snippet[:30]
+				}
+				for _, h := range file.Hunks {
+					for _, l := range h.Lines {
+						if l.Kind != diffparse.Added {
+							continue
+						}
+						if strings.Contains(l.Text, snippet) {
+							b.ItemChange[idx] = ChangeAdded
+							b.ItemSegs[idx] = l.Segments
+							// Word-level hot for this item vs its old counterpart
+							delta := h.NewStart - h.OldStart
+							for _, r := range h.Lines {
+								if r.Kind == diffparse.Removed && r.OldNum+delta == l.NewNum {
+									// Old item text is r.Text without bullet prefix
+									oldItemText := strings.TrimPrefix(strings.TrimSpace(r.Text), "* ")
+									oldItemText = strings.TrimPrefix(oldItemText, "- ")
+									newItemText := inlinesText(item)
+									_, newHot := prettyHotForPretty(oldItemText, newItemText)
+									b.ItemHot[idx] = newHot
+									break
+								}
+							}
+							if b.ItemHot[idx] == nil {
+								// Fallback to word-level from raw segments
+								b.ItemHot[idx] = prettyHotForText(inlinesText(item), l.Segments)
+							}
+							break
+						}
+					}
+					if b.ItemChange[idx] != ChangeContext {
+						break
+					}
+				}
+			}
+			continue
+		}
 		overAdded := overlapsAny(b.StartLine, b.EndLine, adds)
 		overDel := overlapsAny(b.StartLine, b.EndLine, mappedDels)
-		// Also consider direct old intervals as fallback if mapping yields no overlap but direct does? We'll check both.
-		if !overDel {
-			overDel = overlapsAny(b.StartLine, b.EndLine, dels)
-		}
 		switch {
 		case overAdded && overDel:
-			// If both, treat as added if hunk had adds (modify). Prefer added.
 			b.Change = ChangeAdded
 		case overAdded:
 			b.Change = ChangeAdded
@@ -671,7 +714,211 @@ func markChanges(doc *PrettyDoc, file *diffparse.File) {
 		default:
 			b.Change = ChangeContext
 		}
+		if b.Change == ChangeAdded {
+			// Find the Added line that overlaps this block to attach segments and OldText.
+			// Reuses the same refine segments as regular code diff (diffparse/refine.go) so
+			// pretty highlights exactly what changed, not the whole line.
+			for _, h := range file.Hunks {
+				delta := h.NewStart - h.OldStart
+				for _, l := range h.Lines {
+					if l.Kind != diffparse.Added {
+						continue
+					}
+					if l.NewNum < b.StartLine || l.NewNum > b.EndLine {
+						continue
+					}
+					b.Segments = l.Segments
+					// Find paired Removed in same hunk at same mapped position
+					for _, r := range h.Lines {
+						if r.Kind != diffparse.Removed {
+							continue
+						}
+						if r.OldNum+delta == l.NewNum {
+							b.OldText = r.Text
+							b.OldSegs = r.Segments
+							break
+						}
+					}
+					if b.OldText == "" {
+						// Fallback: first Removed in hunk if hunk is a modify (1 del 1 add)
+						for _, r := range h.Lines {
+							if r.Kind == diffparse.Removed {
+								b.OldText = r.Text
+								b.OldSegs = r.Segments
+								break
+							}
+						}
+					}
+					// Word-level hot for pretty, like code but on rendered text (not raw byte offsets)
+					if b.OldText != "" {
+						// Use pretty texts for word-level diff (user requested words not characters)
+						newPretty := inlinesText(b.Inlines)
+						oldHot, newHot := prettyHotForPretty(b.OldText, newPretty)
+						b.OldHot = oldHot
+						b.Hot = newHot
+						// Fallback to raw segments if pretty diff found nothing (e.g. large)
+						if b.Hot == nil && b.Segments != nil {
+							b.Hot = prettyHotForText(newPretty, b.Segments)
+						}
+						if b.OldHot == nil && b.OldSegs != nil {
+							b.OldHot = prettyHotForText(b.OldText, b.OldSegs)
+						}
+					} else if b.Segments != nil {
+						newPretty := inlinesText(b.Inlines)
+						b.Hot = prettyHotForText(newPretty, b.Segments)
+					}
+					break
+				}
+				if b.Segments != nil || b.OldText != "" {
+					break
+				}
+			}
+		}
 	}
+}
+
+// prettyHotForPretty computes word-level hot for pretty texts, like refine but on rendered text.
+// Returns per-rune hot maps, expanded to whole words for readability (user requested words not characters).
+func prettyHotForPretty(oldText, newText string) (oldHot, newHot []bool) {
+	if oldText == "" || newText == "" {
+		return nil, nil
+	}
+	if len(oldText) > 4000 || len(newText) > 4000 {
+		return nil, nil
+	}
+	oldToks := prettyTokenize(oldText)
+	newToks := prettyTokenize(newText)
+	if len(oldToks) > 800 || len(newToks) > 800 {
+		return nil, nil
+	}
+	oldChanged, newChanged := prettyTokenDiff(oldText, oldToks, newText, newToks)
+	// Expand to whole words for readability
+	oldHot = prettySegmentsToHot(oldText, oldToks, oldChanged)
+	newHot = prettySegmentsToHot(newText, newToks, newChanged)
+	return oldHot, newHot
+}
+
+func prettyTokenize(s string) []diffparseToken {
+	var toks []diffparseToken
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		start := i
+		switch {
+		case isSpaceRune(r):
+			for i < len(s) {
+				r, size = utf8.DecodeRuneInString(s[i:])
+				if !isSpaceRune(r) {
+					break
+				}
+				i += size
+			}
+			toks = append(toks, diffparseToken{start, i, true})
+		case isWordRune(r):
+			for i < len(s) {
+				r, size = utf8.DecodeRuneInString(s[i:])
+				if !isWordRune(r) {
+					break
+				}
+				i += size
+			}
+			toks = append(toks, diffparseToken{start, i, false})
+		default:
+			i += size
+			toks = append(toks, diffparseToken{start, i, false})
+		}
+	}
+	return toks
+}
+
+type diffparseToken struct{ start, end int; space bool }
+
+func isSpaceRune(r rune) bool { return r == ' ' || r == '\t' || r == '\r' }
+func isWordRune(r rune) bool {
+	return r == '_' || r >= 128 || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+func prettyTokenDiff(oldStr string, oldToks []diffparseToken, newStr string, newToks []diffparseToken) (oldChanged, newChanged []bool) {
+	n, m := len(oldToks), len(newToks)
+	oldChanged = make([]bool, n)
+	newChanged = make([]bool, m)
+	lo := 0
+	for lo < n && lo < m && oldStr[oldToks[lo].start:oldToks[lo].end] == newStr[newToks[lo].start:newToks[lo].end] {
+		lo++
+	}
+	hiOld, hiNew := n, m
+	for hiOld > lo && hiNew > lo && oldStr[oldToks[hiOld-1].start:oldToks[hiOld-1].end] == newStr[newToks[hiNew-1].start:newToks[hiNew-1].end] {
+		hiOld--
+		hiNew--
+	}
+	a, b := oldToks[lo:hiOld], newToks[lo:hiNew]
+	rows, cols := len(a)+1, len(b)+1
+	lcs := make([]int, rows*cols)
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if oldStr[a[i].start:a[i].end] == newStr[b[j].start:b[j].end] {
+				lcs[i*cols+j] = lcs[(i+1)*cols+j+1] + 1
+			} else if lcs[(i+1)*cols+j] >= lcs[i*cols+j+1] {
+				lcs[i*cols+j] = lcs[(i+1)*cols+j]
+			} else {
+				lcs[i*cols+j] = lcs[i*cols+j+1]
+			}
+		}
+	}
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case oldStr[a[i].start:a[i].end] == newStr[b[j].start:b[j].end]:
+			i++
+			j++
+		case lcs[(i+1)*cols+j] >= lcs[i*cols+j+1]:
+			oldChanged[lo+i] = true
+			i++
+		default:
+			newChanged[lo+j] = true
+			j++
+		}
+	}
+	for ; i < len(a); i++ {
+		oldChanged[lo+i] = true
+	}
+	for ; j < len(b); j++ {
+		newChanged[lo+j] = true
+	}
+	return oldChanged, newChanged
+}
+
+func prettySegmentsToHot(text string, toks []diffparseToken, changed []bool) []bool {
+	runes := []rune(text)
+	hot := make([]bool, len(runes))
+	// Map byte offsets to rune indices
+	byteToRune := make([]int, len(text)+1)
+	ri := 0
+	for bi := 0; bi < len(text); {
+		byteToRune[bi] = ri
+		_, size := utf8.DecodeRuneInString(text[bi:])
+		bi += size
+		ri++
+	}
+	byteToRune[len(text)] = len(runes)
+	for i, tok := range toks {
+		if !changed[i] || tok.space {
+			continue
+		}
+		// Expand to whole word: find word boundaries
+		startRune := byteToRune[tok.start]
+		endRune := byteToRune[tok.end]
+		// Expand to include whole word if token is part of a word (already is word)
+		for j := startRune; j < endRune && j < len(hot); j++ {
+			hot[j] = true
+		}
+	}
+	// If nothing hot, return nil
+	for _, h := range hot {
+		if h {
+			return hot
+		}
+	}
+	return nil
 }
 
 type prettyInterval struct{ s, e int } // [s,e) 1-indexed

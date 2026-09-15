@@ -87,6 +87,12 @@ func renderAsciiDocBody(path string, body []byte, fmLines int) ([]PrettyBlock, e
 	if len(blocks) == 0 {
 		return fallbackAsciiDoc(body, fmLines)
 	}
+	// Reassign line numbers to match the actual source. The synthetic
+	// cursor above drifts (frontmatter filtering, blank lines) and breaks
+	// markChanges which maps hunks by NewStart/NewCount line numbers.
+	// See archive/spec/0002.doc.pretty-render.md Hybrid diff awareness.
+	fixAdocBlockLines(body, blocks)
+
 	// Highlight code blocks
 	for i := range blocks {
 		if blocks[i].Kind == BlockCode && blocks[i].Lang != "" {
@@ -99,6 +105,211 @@ func renderAsciiDocBody(path string, body []byte, fmLines int) ([]PrettyBlock, e
 	// Ensure every element type referenced so import is used.
 	_ = types.Document{}
 	return blocks, nil
+}
+
+func adocBlockSnippet(b *PrettyBlock) string {
+	switch b.Kind {
+	case BlockHeading:
+		if len(b.Inlines) > 0 {
+			return strings.TrimSpace(b.Inlines[0].Text)
+		}
+	case BlockPara, BlockQuote:
+		if len(b.Inlines) > 0 {
+			t := inlinesText(b.Inlines)
+			t = strings.TrimSpace(t)
+			if len(t) > 30 {
+				t = t[:30]
+			}
+			return t
+		}
+		if b.Code != "" {
+			t := strings.TrimSpace(b.Code)
+			if len(t) > 30 {
+				t = t[:30]
+			}
+			return t
+		}
+	case BlockList:
+		if len(b.Items) > 0 && len(b.Items[0]) > 0 {
+			t := inlinesText(b.Items[0])
+			t = strings.TrimSpace(t)
+			if len(t) > 30 {
+				t = t[:30]
+			}
+			return t
+		}
+	case BlockCode:
+		first := strings.Split(b.Code, "\n")[0]
+		first = strings.TrimSpace(first)
+		if len(first) > 30 {
+			first = first[:30]
+		}
+		return first
+	case BlockTable:
+		if len(b.TableHead) > 0 && len(b.TableHead[0]) > 0 {
+			t := inlinesText(b.TableHead[0])
+			t = strings.TrimSpace(t)
+			if len(t) > 30 {
+				t = t[:30]
+			}
+			return t
+		}
+		if len(b.TableRows) > 0 && len(b.TableRows[0]) > 0 && len(b.TableRows[0][0]) > 0 {
+			t := inlinesText(b.TableRows[0][0])
+			t = strings.TrimSpace(t)
+			if len(t) > 30 {
+				t = t[:30]
+			}
+			return t
+		}
+	}
+	return ""
+}
+
+func adocBlockLineCount(b *PrettyBlock) int {
+	switch b.Kind {
+	case BlockCode:
+		n := 1 + strings.Count(b.Code, "\n")
+		if n == 0 {
+			n = 1
+		}
+		// Delimited listing blocks have surrounding delimiters (----) not
+		// in Code; count them so EndLine covers the whole source range.
+		return n + 2
+	case BlockList:
+		n := len(b.Items)
+		if n == 0 {
+			n = 1
+		}
+		return n
+	case BlockTable:
+		n := len(b.TableRows)
+		if len(b.TableHead) > 0 {
+			n++
+		}
+		if n == 0 {
+			n = 1
+		}
+		return n
+	default:
+		return 1
+	}
+}
+
+func fixAdocBlockLines(body []byte, blocks []PrettyBlock) {
+	if len(blocks) == 0 {
+		return
+	}
+	str := strings.ReplaceAll(string(body), "\r\n", "\n")
+	lines := strings.Split(str, "\n")
+
+	// Fix frontmatter block if present: it represents header attributes
+	// (lines like ":revdate: 2026-09-12"). libasciidoc filters internal attrs
+	// (e.g. :toc:) so len(entries) < actual attribute lines.
+	if blocks[0].Kind == BlockFrontmatter {
+		startAttr, endAttr := -1, -1
+		for idx, l := range lines {
+			t := strings.TrimSpace(l)
+			if strings.HasPrefix(t, ":") {
+				// attribute line like ":revdate: ..." or ":toc:"
+				if strings.Contains(t[1:], ":") {
+					if startAttr == -1 {
+						startAttr = idx
+					}
+					endAttr = idx
+					continue
+				}
+			}
+			if startAttr != -1 {
+				// attributes are consecutive at top after the title; first
+				// non-attribute after start ends the range
+				break
+			}
+		}
+		if startAttr != -1 {
+			blocks[0].StartLine = startAttr + 1
+			blocks[0].EndLine = endAttr + 1
+		}
+	}
+
+	// Assign real source lines to remaining blocks by scanning forward for a
+	// snippet of the block's text. This aligns synthetic blocks with the
+	// actual NewStart line numbers used by markChanges.
+	curIdx := 0
+	startLoop := 0
+	if len(blocks) > 0 && blocks[0].Kind == BlockFrontmatter {
+		startLoop = 1
+		// Title block ("= Authentication") is at line 1, before attributes;
+		// start before attributes so it is found correctly.
+		curIdx = 0
+	}
+	for i := startLoop; i < len(blocks); i++ {
+		b := &blocks[i]
+		snippet := adocBlockSnippet(b)
+		if snippet == "" {
+			b.StartLine = curIdx + 1
+			if b.StartLine < 1 {
+				b.StartLine = 1
+			}
+			b.EndLine = b.StartLine
+			curIdx = b.EndLine
+			if curIdx < len(lines) && strings.TrimSpace(lines[curIdx]) == "" {
+				curIdx++
+			}
+			continue
+		}
+		search := snippet
+		// Contains check is substring; trim to avoid over-specificity from
+		// normalized whitespace.
+		search = strings.TrimSpace(search)
+		found := -1
+		for idx := curIdx; idx < len(lines); idx++ {
+			if strings.Contains(lines[idx], search) {
+				found = idx
+				break
+			}
+		}
+		if found == -1 {
+			// Fallback: try first word of snippet, which survives link
+			// normalization (e.g. "See" from "See  0001...").
+			firstWord := strings.Fields(search)
+			if len(firstWord) > 0 {
+				w := firstWord[0]
+				for idx := curIdx; idx < len(lines); idx++ {
+					if strings.Contains(lines[idx], w) {
+						// For headings require a heading marker nearby to avoid
+						// matching the word inside a paragraph.
+						if b.Kind == BlockHeading {
+							t := strings.TrimSpace(lines[idx])
+							if strings.HasPrefix(t, "=") || strings.Contains(t, w) {
+								found = idx
+								break
+							}
+						} else {
+							found = idx
+							break
+						}
+					}
+				}
+			}
+		}
+		if found == -1 {
+			found = curIdx
+			if found >= len(lines) {
+				found = len(lines) - 1
+			}
+			if found < 0 {
+				found = 0
+			}
+		}
+		b.StartLine = found + 1
+		needed := adocBlockLineCount(b)
+		b.EndLine = b.StartLine + needed - 1
+		curIdx = b.EndLine
+		if curIdx < len(lines) && strings.TrimSpace(lines[curIdx]) == "" {
+			curIdx++
+		}
+	}
 }
 
 func flattenAsciiDocElements(doc *types.Document) []interface{} {
