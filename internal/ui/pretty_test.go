@@ -13,6 +13,7 @@ import (
 	"gioui.org/unit"
 
 	"github.com/chromafish/check/internal/diffparse"
+	"github.com/chromafish/check/internal/state"
 	"github.com/chromafish/check/internal/vcs"
 	"github.com/chromafish/check/reef"
 )
@@ -271,4 +272,63 @@ func prettyTestApp() (*App, layout.Context) {
 		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
 		Constraints: layout.Exact(image.Pt(800, 600)),
 	}
+}
+
+func TestNoteCanBeStartedOnAPrettyBlock(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run("init", "-b", "main")
+	write("guide.md", "# Guide\n\nBefore.\n")
+	run("add", ".")
+	run("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+	write("guide.md", "# Guide\n\nAfter, and\nwrapped.\n")
+
+	h := openHarness(t, dir)
+	doc := h.app.diff
+	if doc == nil {
+		t.Fatal("diff did not load")
+	}
+	at := -1
+	for i := range doc.Rows {
+		if r := doc.Row(i); r.Kind == rowPretty && r.Pretty != nil && r.Pretty.Kind == BlockPara {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		t.Fatal("document has no pretty paragraph row")
+	}
+	doc.Cursor = at
+	h.app.startComment()
+
+	d := h.app.draft
+	if d == nil {
+		t.Fatal("no draft was opened on the pretty block")
+	}
+	if d.path != "guide.md" || d.side != state.SideNew || d.line != 3 || d.endLine != 4 {
+		t.Fatalf("draft = %s %s %d-%d, want guide.md new 3-4", d.path, d.side, d.line, d.endLine)
+	}
+	for i := range h.app.diff.Rows {
+		if h.app.diff.Row(i).Kind == rowDraft {
+			return
+		}
+	}
+	t.Fatal("draft row is not shown under the pretty block")
 }

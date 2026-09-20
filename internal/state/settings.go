@@ -24,6 +24,17 @@ type Settings struct {
 	// NoWrap disables soft wrapping of long diff lines. Zero means wrapped:
 	// wrapping is on by default, and only turning it off is recorded.
 	NoWrap bool `json:"no_wrap,omitempty"`
+	// NoSemanticFind keeps find to string matching even when a key for the
+	// service is set. Asking a question about a change sends the lines it
+	// might be about to a third party, so this is how someone who has a key
+	// for one repository declines to use it in another.
+	NoSemanticFind bool `json:"no_semantic_find,omitempty"`
+	// TypeSafeKey is the API key asking a question uses. It is written here
+	// by hand: the settings sheet is a list of choices with no text entry,
+	// and this file is rewritten whenever a preference changes, so the key
+	// is carried through every save rather than being typed into the
+	// interface. CHECK_TYPESAFE_KEY overrides it for a single run.
+	TypeSafeKey string `json:"typesafe_key,omitempty"`
 }
 
 // ThemesDir is where colour schemes are read from: base16 files, in the same

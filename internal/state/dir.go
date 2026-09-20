@@ -41,8 +41,12 @@ func writeJSON(name string, v any) error {
 	if err != nil {
 		return err
 	}
+	// Readable by the owner alone: the settings carry an API key. A stale
+	// temporary file is removed first, since WriteFile keeps the mode of a
+	// file that is already there.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+	os.Remove(tmp)
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

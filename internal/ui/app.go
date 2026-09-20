@@ -14,6 +14,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
+	"github.com/chromafish/check/internal/jev"
 	"github.com/chromafish/check/internal/state"
 	"github.com/chromafish/check/internal/vcs"
 
@@ -131,12 +132,35 @@ type App struct {
 	hoverRow   int // diff row under the pointer, -1 when none
 
 	// In-diff find.
+	//
+	// findOpen is whether the bar is on screen, and is not the same as the
+	// field having the caret. Gio drops the focus of a tag that was not drawn
+	// in the last frame, so a bar laid out only while focused could never
+	// take focus in the first place: it has to be drawn because it is open,
+	// and it is open because something opened it.
 	findField *reef.Field
+	findOpen  bool
+	askMode   bool  // the bar takes a question, not a string to match
 	findHits  []int // rows matching the query
 	findAt    int   // index into findHits, -1 when none
 
-	// Manifest filter.
+	// Semantic find. jev is nil when no key is set or the preference is off,
+	// which is the ordinary state: find is then string matching and nothing
+	// leaves the machine.
+	jev        *jev.Client
+	semRunning bool
+	keyField   *reef.Field // the API key, in the settings sheet
+	// What the last question found, as places in the document it was asked
+	// of rather than rows, which a note or an opened gap renumbers. askGen
+	// counts questions, so that the answer to one since closed or replaced
+	// is recognised when it arrives and dropped.
+	askDoc   *DiffDoc
+	askSpots []lineSpot
+	askGen   int
+
+	// Manifest filter, open on the same terms as find.
 	fileFilter *reef.Field
+	filterOpen bool
 
 	// Where the panes ended up in the last frame. Recorded during layout
 	// rather than recomputed, so hit testing and tests cannot drift out of
@@ -221,7 +245,14 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 	}
 	a.revsetInput = reef.NewField(revset)
 	a.findField = reef.NewField("")
-	a.findField.Placeholder = "find in diff"
+	a.findField.Placeholder = findPlaceholder
+	a.keyField = reef.NewField(a.settings.TypeSafeKey)
+	a.keyField.Placeholder = "paste a TypeSafe key"
+	// A key is a secret read off a screen someone else may be looking at.
+	a.keyField.Editor().Mask = '•'
+	if !a.settings.NoSemanticFind {
+		a.jev = jev.Resolve(a.settings.TypeSafeKey)
+	}
 	a.fileFilter = reef.NewField("")
 	a.fileFilter.Placeholder = "filter files"
 	a.findAt = -1

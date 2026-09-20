@@ -80,7 +80,7 @@ func (a *App) layoutDiff(gtx layout.Context) {
 		blockH = a.layoutTitleBlock(gtx)
 	}
 	findH := 0
-	if a.findField != nil && a.findField.Focused() {
+	if a.findField != nil && a.findOpen {
 		findH = a.layoutFindBarHeight(gtx)
 	}
 	a.diffBodyY = a.bodyTop + a.panelHeadH + 1 + blockH + findH
@@ -107,15 +107,26 @@ func (a *App) layoutFindBar(gtx layout.Context) {
 	fill(gtx, image.Pt(pad, gtx.Dp(2)), image.Pt(fieldW, fh), func(gtx layout.Context) {
 		a.findField.Layout(gtx, a.ui.Theme)
 	})
-	// Match counter.
-	if q := a.findField.Text(); q != "" {
+	// Match counter. A question says so even while it is empty, because the
+	// bar looks the same either way and Enter does something different.
+	if q := a.findField.Text(); q != "" || a.askMode {
 		cnt := ""
-		if len(a.findHits) == 0 {
+		switch {
+		case a.semRunning:
+			cnt = "…"
+		case a.askMode && len(a.findHits) == 0:
+			// The column is sized for a match count, and the controls to the
+			// right of it start where it ends.
+			cnt = "ASK"
+		case len(a.findHits) == 0:
 			cnt = "0"
-		} else if a.findAt >= 0 {
-			cnt = fmt.Sprintf("%d/%d", a.findAt+1, len(a.findHits))
-		} else {
-			cnt = fmt.Sprintf("%d", len(a.findHits))
+		}
+		if cnt == "" {
+			if a.findAt >= 0 {
+				cnt = fmt.Sprintf("%d/%d", a.findAt+1, len(a.findHits))
+			} else {
+				cnt = fmt.Sprintf("%d", len(a.findHits))
+			}
 		}
 		fit(gtx, image.Pt(pad+fieldW+gtx.Dp(reef.Sp3), gtx.Dp(2)+(fh-a.ui.TextRow(gtx, reef.SizeUI))/2), image.Pt(80, fh), func(gtx layout.Context) {
 			a.ui.Label(gtx, a.ui.P.Muted, cnt)

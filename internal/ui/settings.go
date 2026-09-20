@@ -6,6 +6,7 @@ import (
 	"image"
 	"os"
 	"slices"
+	"strings"
 
 	"gioui.org/font"
 	"gioui.org/io/event"
@@ -14,6 +15,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
+	"github.com/chromafish/check/internal/jev"
 	"github.com/chromafish/check/internal/state"
 
 	"github.com/chromafish/check/reef"
@@ -75,6 +77,10 @@ func (a *App) askSchemes() {
 func (a *App) toggleSettings() {
 	a.settingsOpen = !a.settingsOpen
 	if !a.settingsOpen {
+		// The sheet can be closed with the caret still in the key field, and
+		// a key typed but never recorded is the same as no key at all.
+		a.adoptKey()
+		a.settingsList = listThemes
 		return
 	}
 	a.help, a.notesOpen = false, false
@@ -258,12 +264,32 @@ func darkName(dark bool) string {
 // settingsKey is the whole keyboard while the sheet is up. It is a modal
 // screen: the keys it does not use do nothing rather than reaching the review
 // underneath, where they would move a selection nobody can see.
-func (a *App) settingsKey(name key.Name) {
+func (a *App) settingsKey(gtx layout.Context, name key.Name) {
+	// While the key field has the caret it is an ordinary text field, and the
+	// letters that are commands everywhere else are just letters.
+	if a.keyField != nil && a.keyField.Focused() {
+		switch name {
+		case key.NameEscape, key.NameTab:
+			a.settingsList = listThemes
+			a.keyField.Defocus(gtx)
+			a.adoptKey()
+		}
+		return
+	}
 	switch name {
 	case key.NameEscape, key.NameReturn, key.NameEnter, ",":
+		a.adoptKey()
+		a.settingsList = listThemes
 		a.settingsOpen = false
 	case key.NameTab:
-		a.settingsList = (a.settingsList + 1) % 2
+		a.settingsList = (a.settingsList + 1) % 3
+		if a.settingsList == listKey {
+			if a.keyField == nil {
+				a.settingsList = listThemes
+			} else {
+				a.keyField.Focus(gtx)
+			}
+		}
 	case key.NameUpArrow, "K":
 		a.moveList(-1)
 	case key.NameDownArrow, "J":
@@ -277,13 +303,42 @@ func (a *App) settingsKey(name key.Name) {
 	}
 }
 
-// moveList steps whichever of the sheet's two lists has the cursor.
-func (a *App) moveList(delta int) {
-	if a.settingsList == listThemes {
-		a.moveScheme(delta)
+// adoptKey takes what is in the field, records it and rebuilds the client, so
+// that a key pasted in is usable without restarting. An empty field turns
+// asking off, which is how a key is taken back out.
+func (a *App) adoptKey() {
+	if a.keyField == nil {
 		return
 	}
-	a.moveFamily(delta)
+	key := strings.TrimSpace(a.keyField.Text())
+	if key == a.settings.TypeSafeKey {
+		return
+	}
+	a.settings.TypeSafeKey = key
+	a.saveSettings()
+	if a.settings.NoSemanticFind {
+		a.jev = nil
+		return
+	}
+	a.jev = jev.Resolve(key)
+	switch {
+	case a.jev == nil:
+		a.note("key cleared, asking is off")
+	case os.Getenv(jev.EnvKey) != "":
+		a.note("key saved, though %s overrides it for this run", jev.EnvKey)
+	default:
+		a.note("key saved")
+	}
+}
+
+// moveList steps whichever of the sheet's two lists has the cursor.
+func (a *App) moveList(delta int) {
+	switch a.settingsList {
+	case listThemes:
+		a.moveScheme(delta)
+	case listFamilies:
+		a.moveFamily(delta)
+	}
 }
 
 // The sheet's two lists. Tab moves between them and j/k move inside the one
@@ -291,6 +346,7 @@ func (a *App) moveList(delta int) {
 const (
 	listThemes = iota
 	listFamilies
+	listKey
 )
 
 // familyTag and schemeTag name one row of each list for the pointer.
@@ -318,7 +374,8 @@ func (a *App) layoutSettings(gtx layout.Context) {
 
 	// The sheet is sized from its contents, and the two lists are the parts of
 	// it that give way when the window is short.
-	fixed := row*6 + stepH + code*2 + half*5 + pad*2
+	fieldH := ui.FieldHeight(gtx)
+	fixed := row*8 + stepH + fieldH + code*2 + half*6 + pad*2
 	themes := clamp(len(a.schemes), 1, 6)
 	faces := clamp(len(a.families), 1, 10)
 	for faces+themes > 2 && fixed+row*(faces+themes) > size.Y-gtx.Dp(48) {
@@ -416,6 +473,27 @@ func (a *App) layoutSettings(gtx layout.Context) {
 	ly += stepH
 
 	ly += half
+	label(ly, ui.P.Faint, "ASKING")
+	if a.settings.NoSemanticFind {
+		note(ly, "turned off")
+	} else if env := os.Getenv(jev.EnvKey); env != "" {
+		note(ly, jev.EnvKey+" in force")
+	} else if a.jev == nil {
+		note(ly, "no key")
+	} else {
+		note(ly, "ready · SHIFT-F")
+	}
+	ly += row
+	if a.keyField != nil {
+		fit(gtx, image.Pt(x+pad, ly), image.Pt(w-pad*2, fieldH), func(gtx layout.Context) {
+			a.keyField.Layout(gtx, ui.Theme)
+		})
+	}
+	ly += fieldH
+	label(ly, ui.P.Faint, "a TypeSafe key lets SHIFT-F ask about the diff")
+	ly += row
+
+	ly += half
 	label(ly, ui.P.Faint, "SPECIMEN")
 	ly += row
 	// Two lines of the diff, in the colours, face and size the diff will be
@@ -437,7 +515,7 @@ func (a *App) layoutSettings(gtx layout.Context) {
 	ly += code * 2
 
 	ly += half
-	label(ly, ui.P.Faint, "TAB LIST · J K CHOOSE · T INVERT · ESC CLOSE")
+	label(ly, ui.P.Faint, "TAB SECTION · J K CHOOSE · T INVERT · ESC CLOSE")
 }
 
 // schemeRow names one colour scheme and says what modes it has, so a person

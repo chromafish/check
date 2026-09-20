@@ -18,6 +18,16 @@ func (a *App) rebuildFind() {
 	if q == "" {
 		a.findHits = nil
 		a.findAt = -1
+		if a.askMode {
+			a.dropAsk()
+		}
+		return
+	}
+	// A question is not matched as it is typed: it costs a request, and half
+	// a question is not the question. The hits its last run left stand, moved
+	// onto wherever their lines now are.
+	if a.askMode {
+		a.askHits()
 		return
 	}
 	lower := strings.ToLower(q)
@@ -116,8 +126,15 @@ func (a *App) updateFind(gtx layout.Context) bool {
 		a.rebuildFind()
 	}
 	if submitted {
-		// Enter jumps to current or next.
-		if len(a.findHits) > 0 {
+		q := strings.TrimSpace(text)
+		switch {
+		case a.askMode && q != "":
+			// Enter runs the question, and running it again re-asks it.
+			if !a.semRunning {
+				a.semFind(q)
+			}
+		case !a.askMode && len(a.findHits) > 0:
+			// Enter jumps to current or next.
 			a.jumpFind(1)
 		}
 	}
@@ -130,6 +147,16 @@ func (a *App) startFind(gtx layout.Context) {
 		return
 	}
 	a.focus = PaneDiff
+	a.findOpen = true
+	if a.askMode {
+		// Coming from a question, what is in the field is not a string to
+		// match and the rows it found are not matches of one.
+		a.findField.SetText("")
+		a.findHits, a.findAt = nil, -1
+		a.dropAsk()
+	}
+	a.askMode = false
+	a.findField.Placeholder = findPlaceholder
 	a.findField.Focus(gtx)
 	a.rebuildFind()
 	if len(a.findHits) > 0 && a.findAt >= 0 {
@@ -146,7 +173,13 @@ func (a *App) closeFind(gtx layout.Context) {
 	if a.findField != nil {
 		a.findField.SetText("")
 		a.findField.Defocus(gtx)
+		a.findField.Placeholder = findPlaceholder
 	}
+	if a.askMode {
+		a.dropAsk()
+	}
+	a.findOpen = false
+	a.askMode = false
 	a.findHits = nil
 	a.findAt = -1
 	gtx.Execute(key.FocusCmd{Tag: nil})
@@ -251,6 +284,7 @@ func (a *App) startFileFilter(gtx layout.Context) {
 		return
 	}
 	a.focus = PaneFiles
+	a.filterOpen = true
 	a.fileFilter.Focus(gtx)
 }
 
@@ -260,6 +294,7 @@ func (a *App) clearFileFilter(gtx layout.Context) {
 	}
 	a.fileFilter.SetText("")
 	a.fileFilter.Defocus(gtx)
+	a.filterOpen = false
 	gtx.Execute(key.FocusCmd{Tag: nil})
 }
 
@@ -342,3 +377,9 @@ func (a *App) jumpOpen(dir int) {
 	}
 	a.note("no open notes")
 }
+
+// The two things the bar can be, said in the field itself.
+const (
+	findPlaceholder = "find in diff"
+	askPlaceholder  = "ask about this change"
+)

@@ -213,3 +213,80 @@ func TestChoosingAThemeDrawsTheInterfaceInIt(t *testing.T) {
 		t.Error("inverting a scheme with one mode changed the palette")
 	}
 }
+
+// The key for asking is entered on the settings sheet, because a key nobody
+// can type is a key nobody has.
+func TestTheSettingsSheetTakesTheKey(t *testing.T) {
+	h := newHarness(t)
+	h.settle()
+	h.press(",", 0)
+	if !h.app.settingsOpen {
+		t.Fatal("the settings sheet did not open")
+	}
+	// Tab walks the sheet's sections: themes, typefaces, then the key.
+	h.press(key.NameTab, 0)
+	h.press(key.NameTab, 0)
+	if h.app.settingsList != listKey {
+		t.Fatalf("section = %d, want the key section", h.app.settingsList)
+	}
+	if !h.app.keyField.Focused() {
+		t.Fatal("the key field did not take the caret")
+	}
+
+	h.app.keyField.SetText("sk-test-key")
+	h.press(key.NameReturn, 0)
+
+	if got := h.app.settings.TypeSafeKey; got != "sk-test-key" {
+		t.Errorf("stored key = %q, want the one that was typed", got)
+	}
+	if h.app.jev == nil {
+		t.Error("asking is still off although a key was entered")
+	}
+	if h.app.settingsOpen == false {
+		t.Error("return in the key field closed the whole sheet, not just the field")
+	}
+	// It survives the application, which is the point of putting it here.
+	if state.LoadSettings().TypeSafeKey != "sk-test-key" {
+		t.Error("the key was not written to the settings file")
+	}
+}
+
+// Emptying the field is how a key is taken back out.
+func TestClearingTheKeyTurnsAskingOff(t *testing.T) {
+	h := newHarness(t)
+	h.settle()
+	h.press(",", 0)
+	h.press(key.NameTab, 0)
+	h.press(key.NameTab, 0)
+	h.app.keyField.SetText("sk-test-key")
+	h.press(key.NameReturn, 0)
+	if h.app.jev == nil {
+		t.Fatal("setup: the key did not take")
+	}
+
+	h.press(key.NameTab, 0)
+	h.press(key.NameTab, 0)
+	h.app.keyField.SetText("")
+	h.press(key.NameReturn, 0)
+	if h.app.jev != nil {
+		t.Error("asking is still on with an empty key")
+	}
+	if state.LoadSettings().TypeSafeKey != "" {
+		t.Error("the cleared key is still in the settings file")
+	}
+}
+
+// While the caret is in the key field the letters bound to commands are just
+// letters, or a key with a t or a j in it could not be typed.
+func TestKeyFieldSwallowsTheCommandLetters(t *testing.T) {
+	h := newHarness(t)
+	h.settle()
+	dark := h.app.settings.Dark
+	h.press(",", 0)
+	h.press(key.NameTab, 0)
+	h.press(key.NameTab, 0)
+	h.press("T", 0)
+	if h.app.settings.Dark != dark {
+		t.Error("t inverted the palette while the caret was in the key field")
+	}
+}

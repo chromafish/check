@@ -302,6 +302,16 @@ func (a *App) handleKeys(gtx layout.Context) {
 		a.sonda.filter.Update(gtx)
 		editing = editing || a.sonda.filter.Focused()
 	}
+	if a.keyField != nil {
+		// A field that submits swallows Return, so the key is taken here
+		// rather than from the settings sheet's own keys.
+		if _, submitted := a.keyField.Update(gtx); submitted {
+			a.keyField.Defocus(gtx)
+			a.settingsList = listThemes
+			a.adoptKey()
+		}
+		editing = editing || a.keyField.Focused()
+	}
 	findEditing := a.updateFind(gtx)
 	fileEditing := a.updateFileFilter(gtx)
 	editing = editing || findEditing || fileEditing
@@ -393,7 +403,7 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	// The settings sheet is modal: while it is up it is the whole keyboard,
 	// so a keystroke meant for it never also moves something underneath it.
 	if a.settingsOpen {
-		a.settingsKey(ke.Name)
+		a.settingsKey(gtx, ke.Name)
 		return
 	}
 	// So is the sonda screen: the review is not on screen while it is up.
@@ -574,9 +584,12 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	case "W":
 		a.toggleWrap()
 	case "F":
-		if a.focus == PaneFiles {
+		switch {
+		case shift:
+			a.startAsk(gtx)
+		case a.focus == PaneFiles:
 			a.startFileFilter(gtx)
-		} else {
+		default:
 			a.startFind(gtx)
 		}
 	case "U":
@@ -667,6 +680,23 @@ var helpSheet = [][2]string{
 	{"CMD-O", "open another repository"},
 }
 
+// helpRows is the sheet as it stands for this run. Asking a question is only
+// listed when there is a key for it: a binding that would answer "you cannot"
+// is not one worth reading past every time the sheet is opened.
+func (a *App) helpRows() [][2]string {
+	if a.jev == nil {
+		return helpSheet
+	}
+	rows := make([][2]string, 0, len(helpSheet)+1)
+	for _, r := range helpSheet {
+		rows = append(rows, r)
+		if r[0] == "F / CMD-F" {
+			rows = append(rows, [2]string{"SHIFT-F", "ask about the change (⏎ asks)"})
+		}
+	}
+	return rows
+}
+
 func (a *App) layoutHelp(gtx layout.Context) {
 	if !a.help {
 		return
@@ -677,12 +707,13 @@ func (a *App) layoutHelp(gtx layout.Context) {
 	row := ui.TextRow(gtx, reef.SizeUI)
 	pad := gtx.Dp(reef.PadCard)
 
+	rows := a.helpRows()
 	keyW := 0
-	for _, h := range helpSheet {
+	for _, h := range rows {
 		keyW = max(keyW, len(h[0]))
 	}
 	w := min(size.X-gtx.Dp(80), (keyW+46)*cell.X+pad*2)
-	h := min(size.Y-gtx.Dp(80), row*(len(helpSheet)+4)+pad*2)
+	h := min(size.Y-gtx.Dp(80), row*(len(rows)+4)+pad*2)
 	x, y := (size.X-w)/2, (size.Y-h)/2
 
 	// A sheet that floats is drawn on the raised surface behind an ink hairline.
@@ -693,7 +724,7 @@ func (a *App) layoutHelp(gtx layout.Context) {
 		ui.Label(gtx, ui.P.Strong, "KEYS")
 	})
 
-	for i, entry := range helpSheet {
+	for i, entry := range rows {
 		ly := y + pad + row*(i+2)
 		if ly+row > y+h-pad {
 			break

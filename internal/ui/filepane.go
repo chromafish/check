@@ -29,7 +29,7 @@ func (a *App) layoutFiles(gtx layout.Context) {
 	size := gtx.Constraints.Max
 	// Manifest filter bar, when active or non-empty.
 	filterH := 0
-	if a.fileFilter != nil && (a.fileFilter.Focused() || a.fileFilter.Text() != "") {
+	if a.fileFilter != nil && (a.filterOpen || a.fileFilter.Text() != "") {
 		filterH = a.ui.FieldHeight(gtx) + gtx.Dp(4)
 		fill(gtx, image.Pt(0, 0), image.Pt(size.X, filterH), func(gtx layout.Context) {
 			fh := a.ui.FieldHeight(gtx)

@@ -221,6 +221,25 @@ func (a *App) startComment() {
 		a.rebuildRows()
 		return
 	}
+	// A rendered document block is numbered in the new file, so a note on it
+	// covers the source lines the block was made from.
+	if r.Kind == rowPretty && r.Pretty != nil {
+		b := r.Pretty
+		if b.StartLine == 0 {
+			return
+		}
+		endLine := 0
+		if b.EndLine > b.StartLine {
+			endLine = b.EndLine
+		}
+		a.clearSelection()
+		a.draft = &draft{
+			path: path, side: state.SideNew, line: b.StartLine, endLine: endLine,
+			field: reef.NewMultiField(""), wantFocus: true,
+		}
+		a.rebuildRows()
+		return
+	}
 	if r.Kind != rowLine {
 		return
 	}

@@ -59,28 +59,28 @@ type Inline struct {
 
 // PrettyBlock is one rendered block of a document.
 type PrettyBlock struct {
-	Kind      BlockKind
-	Level     int // heading level 1..6
-	Inlines   []Inline
-	Ordered   bool
-	ListStart int
-	Items     [][]Inline // for lists
-	TableHead [][]Inline // header row cells
-	TableRows [][][]Inline
-	Code      string
-	Lang      string
-	Spans     highlight.Lines // highlighted lines for code block (one entry per source line)
-	StartLine int
-	EndLine   int
-	Change    ChangeKind
-	OldText   string              // for modified blocks: the removed line's raw text (for reference)
-	Segments  []diffparse.Segment // changed segments for this block's new text (from diff refine, kept for code)
-	OldSegs   []diffparse.Segment // changed segments for OldText
-	Hot       []bool              // per-rune hot for new pretty text, word-level (like code's hot)
-	OldHot    []bool              // per-rune hot for OldText
-	ItemChange []ChangeKind // per-item change for lists, same length as Items
+	Kind       BlockKind
+	Level      int // heading level 1..6
+	Inlines    []Inline
+	Ordered    bool
+	ListStart  int
+	Items      [][]Inline // for lists
+	TableHead  [][]Inline // header row cells
+	TableRows  [][][]Inline
+	Code       string
+	Lang       string
+	Spans      highlight.Lines // highlighted lines for code block (one entry per source line)
+	StartLine  int
+	EndLine    int
+	Change     ChangeKind
+	OldText    string                // for modified blocks: the removed line's raw text (for reference)
+	Segments   []diffparse.Segment   // changed segments for this block's new text (from diff refine, kept for code)
+	OldSegs    []diffparse.Segment   // changed segments for OldText
+	Hot        []bool                // per-rune hot for new pretty text, word-level (like code's hot)
+	OldHot     []bool                // per-rune hot for OldText
+	ItemChange []ChangeKind          // per-item change for lists, same length as Items
 	ItemSegs   [][]diffparse.Segment // per-item segments for exact highlight
-	ItemHot    [][]bool // per-item hot, word-level
+	ItemHot    [][]bool              // per-item hot, word-level
 	// For frontmatter table:
 	Frontmatter []FrontmatterEntry
 }
@@ -830,7 +830,10 @@ func prettyTokenize(s string) []diffparseToken {
 	return toks
 }
 
-type diffparseToken struct{ start, end int; space bool }
+type diffparseToken struct {
+	start, end int
+	space      bool
+}
 
 func isSpaceRune(r rune) bool { return r == ' ' || r == '\t' || r == '\r' }
 func isWordRune(r rune) bool {
