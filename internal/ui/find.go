@@ -242,21 +242,6 @@ func (a *App) visiblePos(abs int) int {
 	return -1
 }
 
-// scrollFileList keeps the manifest's cursor visible, accounting for filtering.
-func (a *App) scrollFileList(abs int) {
-	vis := a.visibleFiles()
-	for i, v := range vis {
-		if v == abs {
-			a.scrollList(&a.fileList, i)
-			return
-		}
-	}
-	// If hidden by filter, clear filter to show it.
-	if a.fileFilter != nil && a.fileFilter.Text() != "" {
-		// Keep selection but don't scroll; user sees NO MATCH.
-	}
-}
-
 // updateFileFilter processes the manifest filter field once per frame.
 func (a *App) updateFileFilter(gtx layout.Context) bool {
 	if a.fileFilter == nil {

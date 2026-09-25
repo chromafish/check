@@ -3,3 +3,4 @@
 /build/
 *.png
 !assets/logo.png
+.env

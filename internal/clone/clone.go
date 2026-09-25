@@ -63,8 +63,8 @@ func Parse(raw string) (Source, error) {
 	// scp-like ssh: git@host:owner/repo.git. It has no scheme and a colon
 	// before the first slash.
 	if !strings.Contains(raw, "://") {
-		if at, colon := strings.Index(raw, "@"), strings.Index(raw, ":"); colon > 0 && (at < 0 || at < colon) &&
-			(strings.Index(raw, "/") < 0 || colon < strings.Index(raw, "/")) {
+		if at, colon, slash := strings.Index(raw, "@"), strings.Index(raw, ":"), strings.Index(raw, "/"); colon > 0 && (at < 0 || at < colon) &&
+			(slash < 0 || colon < slash) {
 			host := raw[:colon]
 			if at >= 0 {
 				host = raw[at+1 : colon]
