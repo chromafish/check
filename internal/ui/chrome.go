@@ -265,7 +265,10 @@ func (a *App) statusLeft() string {
 		return a.status
 	}
 	if a.repo == nil {
-		return "⌘o choose a folder · j/k recent · enter open"
+		if a.cloning != nil {
+			return "esc stop"
+		}
+		return "⌘o choose a folder · tab paste a link · j/k recent · enter open"
 	}
 	if a.sondaOpen() {
 		return "r run · x stop · j/k move · tab pane · / filter · l level · w raw · esc back"
@@ -308,15 +311,24 @@ func (a *App) handleKeys(gtx layout.Context) {
 		a.sonda.filter.Update(gtx)
 		editing = editing || a.sonda.filter.Focused()
 	}
-	if a.keyField != nil {
-		// A field that submits swallows Return, so the key is taken here
-		// rather than from the settings sheet's own keys.
-		if _, submitted := a.keyField.Update(gtx); submitted {
-			a.keyField.Defocus(gtx)
-			a.settingsList = listThemes
-			a.adoptKey()
+	// A field that submits swallows Return, so the settings sheet's fields
+	// are taken here rather than from the sheet's own keys.
+	for _, f := range []*reef.Field{a.keyField, a.cloneField} {
+		if f == nil {
+			continue
 		}
-		editing = editing || a.keyField.Focused()
+		if _, submitted := f.Update(gtx); submitted {
+			f.Defocus(gtx)
+			a.settingsList = listThemes
+			a.adoptFields()
+		}
+		editing = editing || f.Focused()
+	}
+	if a.urlField != nil {
+		if text, submitted := a.urlField.Update(gtx); submitted {
+			a.cloneLink(text)
+		}
+		editing = editing || a.urlField.Focused()
 	}
 	if a.askField != nil {
 		if text, submitted := a.askField.Update(gtx); submitted {
@@ -430,7 +442,16 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 
 	// With no repository open, the only navigation is through the recent list.
 	if a.repo == nil {
+		if a.urlField != nil && a.urlField.Focused() {
+			if ke.Name == key.NameEscape && !a.stopClone() {
+				a.urlField.Defocus(gtx)
+				gtx.Execute(key.FocusCmd{Tag: nil})
+			}
+			return
+		}
 		switch ke.Name {
+		case key.NameTab:
+			a.urlField.Focus(gtx)
 		case key.NameUpArrow, "K":
 			a.moveRecent(-1)
 		case key.NameDownArrow, "J":
@@ -438,6 +459,9 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		case key.NameReturn, key.NameEnter:
 			a.openSelectedRecent()
 		case key.NameEscape:
+			if a.stopClone() {
+				return
+			}
 			a.openErr = ""
 			a.failure = ""
 		}

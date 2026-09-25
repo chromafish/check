@@ -8,6 +8,7 @@ import (
 
 	"gioui.org/app"
 
+	"github.com/chromafish/check/internal/clone"
 	"github.com/chromafish/check/internal/journal"
 	"github.com/chromafish/check/internal/repo"
 	"github.com/chromafish/check/internal/state"
@@ -22,7 +23,9 @@ func main() {
 	revset := flag.String("r", "", "revisions to list: a jj revset, or arguments for git log")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: check [-r revset] [path]\n\n")
+		fmt.Fprintf(os.Stderr, "usage: check [-r revset] [path | repository link]\n\n"+
+			"With no path, the start screen: recent repositories, a folder, or a link.\n"+
+			"Use \"check .\" for the current folder.\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -42,13 +45,29 @@ func main() {
 		open  vcs.Repo
 		store *state.Store
 	)
-	if r, err := repo.Open(context.Background(), dir); err == nil {
-		open, store = r, state.New()
-	} else if flag.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "check:", err)
+	// With no path the start screen comes up, to pick a recent repository,
+	// choose a folder or paste a link; "check ." is the current folder. An
+	// argument that is not a folder on disk but reads as a repository link
+	// is cloned, or found among the clones already made.
+	link := ""
+	if flag.NArg() > 0 {
+		if r, err := repo.Open(context.Background(), dir); err == nil {
+			open, store = r, state.New()
+		} else if _, statErr := os.Stat(dir); statErr != nil {
+			if _, perr := clone.Parse(dir); perr == nil {
+				link, dir = dir, "."
+			} else {
+				fmt.Fprintln(os.Stderr, "check:", err)
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "check:", err)
+		}
 	}
 
 	a := ui.New(open, dir, store, *revset)
+	if link != "" {
+		a.Clone(link)
+	}
 	go func() {
 		if err := a.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, "check:", err)

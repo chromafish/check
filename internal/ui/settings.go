@@ -15,6 +15,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
+	"github.com/chromafish/check/internal/clone"
 	"github.com/chromafish/check/internal/jev"
 	"github.com/chromafish/check/internal/state"
 
@@ -77,9 +78,9 @@ func (a *App) askSchemes() {
 func (a *App) toggleSettings() {
 	a.settingsOpen = !a.settingsOpen
 	if !a.settingsOpen {
-		// The sheet can be closed with the caret still in the key field, and
-		// a key typed but never recorded is the same as no key at all.
-		a.adoptKey()
+		// The sheet can be closed with the caret still in a field, and what
+		// was typed but never recorded is the same as nothing typed.
+		a.adoptFields()
 		a.settingsList = listThemes
 		return
 	}
@@ -265,29 +266,37 @@ func darkName(dark bool) string {
 // screen: the keys it does not use do nothing rather than reaching the review
 // underneath, where they would move a selection nobody can see.
 func (a *App) settingsKey(gtx layout.Context, name key.Name) {
-	// While the key field has the caret it is an ordinary text field, and the
-	// letters that are commands everywhere else are just letters.
-	if a.keyField != nil && a.keyField.Focused() {
+	// While a field has the caret it is an ordinary text field, and the
+	// letters that are commands everywhere else are just letters. Tab goes
+	// on to the next field, and past the last back to the lists.
+	if f, list := a.focusedSettingsField(); f != nil {
 		switch name {
-		case key.NameEscape, key.NameTab:
+		case key.NameEscape:
 			a.settingsList = listThemes
-			a.keyField.Defocus(gtx)
-			a.adoptKey()
+			f.Defocus(gtx)
+			a.adoptFields()
+		case key.NameTab:
+			f.Defocus(gtx)
+			a.adoptFields()
+			a.settingsList = (list + 1) % numLists
+			if g := a.settingsField(a.settingsList); g != nil {
+				g.Focus(gtx)
+			}
 		}
 		return
 	}
 	switch name {
 	case key.NameEscape, key.NameReturn, key.NameEnter, ",":
-		a.adoptKey()
+		a.adoptFields()
 		a.settingsList = listThemes
 		a.settingsOpen = false
 	case key.NameTab:
-		a.settingsList = (a.settingsList + 1) % 3
-		if a.settingsList == listKey {
-			if a.keyField == nil {
-				a.settingsList = listThemes
+		a.settingsList = (a.settingsList + 1) % numLists
+		if a.settingsList >= listKey {
+			if f := a.settingsField(a.settingsList); f != nil {
+				f.Focus(gtx)
 			} else {
-				a.keyField.Focus(gtx)
+				a.settingsList = listThemes
 			}
 		}
 	case key.NameUpArrow, "K":
@@ -301,6 +310,49 @@ func (a *App) settingsKey(gtx layout.Context, name key.Name) {
 	case "=": // the unshifted spelling of +
 		a.nudgeSize(1)
 	}
+}
+
+// settingsField is the text field a section of the sheet is, or nil for the
+// two lists.
+func (a *App) settingsField(list int) *reef.Field {
+	switch list {
+	case listKey:
+		return a.keyField
+	case listClone:
+		return a.cloneField
+	}
+	return nil
+}
+
+// focusedSettingsField is the field with the caret, and its section.
+func (a *App) focusedSettingsField() (*reef.Field, int) {
+	for _, list := range []int{listKey, listClone} {
+		if f := a.settingsField(list); f != nil && f.Focused() {
+			return f, list
+		}
+	}
+	return nil, 0
+}
+
+// adoptFields records whatever the sheet's fields hold.
+func (a *App) adoptFields() {
+	a.adoptKey()
+	a.adoptCloneDir()
+}
+
+// adoptCloneDir records where pasted links are cloned. An empty field is the
+// default folder.
+func (a *App) adoptCloneDir() {
+	if a.cloneField == nil {
+		return
+	}
+	dir := strings.TrimSpace(a.cloneField.Text())
+	if dir == a.settings.CloneDir {
+		return
+	}
+	a.settings.CloneDir = dir
+	a.saveSettings()
+	a.note("clones go in %s", shortenHome(clone.ExpandRoot(dir)))
 }
 
 // adoptKey takes what is in the field, records it and rebuilds the client, so
@@ -347,6 +399,8 @@ const (
 	listThemes = iota
 	listFamilies
 	listKey
+	listClone
+	numLists
 )
 
 // familyTag and schemeTag name one row of each list for the pointer.
@@ -375,7 +429,7 @@ func (a *App) layoutSettings(gtx layout.Context) {
 	// The sheet is sized from its contents, and the two lists are the parts of
 	// it that give way when the window is short.
 	fieldH := ui.FieldHeight(gtx)
-	fixed := row*8 + stepH + fieldH + code*2 + half*6 + pad*2
+	fixed := row*10 + stepH + fieldH*2 + code*2 + half*7 + pad*2
 	themes := clamp(len(a.schemes), 1, 6)
 	faces := clamp(len(a.families), 1, 10)
 	for faces+themes > 2 && fixed+row*(faces+themes) > size.Y-gtx.Dp(48) {
@@ -491,6 +545,19 @@ func (a *App) layoutSettings(gtx layout.Context) {
 	}
 	ly += fieldH
 	label(ly, ui.P.Faint, "with a TypeSafe key, jev briefs every change as it opens")
+	ly += row
+
+	ly += half
+	label(ly, ui.P.Faint, "CLONE INTO")
+	note(ly, shortenHome(clone.ExpandRoot(a.settings.CloneDir)))
+	ly += row
+	if a.cloneField != nil {
+		fit(gtx, image.Pt(x+pad, ly), image.Pt(w-pad*2, fieldH), func(gtx layout.Context) {
+			a.cloneField.Layout(gtx, ui.Theme)
+		})
+	}
+	ly += fieldH
+	label(ly, ui.P.Faint, "a pasted link is cloned here once, and fetched after that")
 	ly += row
 
 	ly += half

@@ -40,6 +40,25 @@ func Run(ctx context.Context, dir, bin string, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+// RunTee is Run for a command a person is watching: env is added to the
+// environment, and standard error is copied to progress as it is written,
+// as well as kept for the error. It is how a clone shows what git is doing.
+func RunTee(ctx context.Context, dir, bin string, env []string, progress io.Writer, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.MultiWriter(&stderr, progress)
+	cmd.WaitDelay = waitDelay
+	err := cmd.Run()
+	ran(cmd, err)
+	if err != nil {
+		return nil, said(err, &stderr)
+	}
+	return stdout.Bytes(), nil
+}
+
 // said prefers what the command printed over the exit status it died with.
 func said(err error, stderr *bytes.Buffer) error {
 	if msg := strings.TrimSpace(stderr.String()); msg != "" {

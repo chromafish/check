@@ -15,6 +15,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
+	"github.com/chromafish/check/internal/clone"
 	"github.com/chromafish/check/internal/jev"
 	"github.com/chromafish/check/internal/state"
 	"github.com/chromafish/check/internal/vcs"
@@ -183,6 +184,14 @@ type App struct {
 	branchGen  int
 	reviewKey  string
 	reviewList layout.List
+	// Cloning from a pasted link: the field on the open screen, the folder
+	// clones go in (in the settings sheet), and the clone in flight.
+	urlField   *reef.Field
+	cloneField *reef.Field
+	cloning    *cloneJob
+	console    *console // what git printed for the last clone, until it opens
+	urlAsked   bool     // the field has been given the caret once already
+
 	// otherFractions is the split of the view not on screen.
 	otherFractions [2]float32
 
@@ -285,6 +294,10 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 	if !a.settings.NoSemanticFind {
 		a.jev = jev.Resolve(a.settings.TypeSafeKey)
 	}
+	a.urlField = reef.NewField("")
+	a.urlField.Placeholder = "paste a repository link — a branch link checks the branch out"
+	a.cloneField = reef.NewField(a.settings.CloneDir)
+	a.cloneField.Placeholder = shortenHome(clone.DefaultRoot())
 	a.askField = reef.NewField("")
 	a.askField.Placeholder = "ask jev about this change"
 	a.fileFilter = reef.NewField("")
