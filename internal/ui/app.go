@@ -169,7 +169,9 @@ type App struct {
 	briefGen   int
 	briefSel   int
 	heat       map[string]float64
+	marks      map[markKey]bool // lines the brief points at, for the gutter
 	briefList  layout.List
+	jevOpen    bool // the jev sheet is up
 
 	// The jev bar at the head of the brief column, and the last question
 	// asked in it.
@@ -180,7 +182,9 @@ type App struct {
 	// The review column: every branch, the one open with its commits, and
 	// which row is under review, named so that a reload can find it again.
 	branches   []string
-	branch     *vcs.Branch
+	current    string                 // the branch the working copy is on
+	details    map[string]*vcs.Branch // branches read so far
+	opened     map[string]bool        // branches open in the column
 	branchGen  int
 	reviewKey  string
 	reviewList layout.List
@@ -495,11 +499,22 @@ func (a *App) reload(snapshot bool) {
 		// A repository with no branches, or a tool that will not list them,
 		// still has its working copy to review.
 		branches, _ := a.repo.Branches(ctx)
+		current, _ := a.repo.CurrentBranch(ctx)
 		return func() {
 			slog.Info("revset evaluated", "revset", revset, "revisions", len(revs))
 			a.failure = ""
 			a.revs = revs
 			a.branches = branches
+			if current != a.current {
+				delete(a.opened, a.current)
+			}
+			a.current = current
+			if current != "" {
+				if a.opened == nil {
+					a.opened = map[string]bool{}
+				}
+				a.opened[current] = true
+			}
 			a.revSel = 0
 			for i, r := range revs {
 				if r.ChangeID == keep {
@@ -637,6 +652,7 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	a.layoutNotes(gtx)
 	a.layoutHelp(gtx)
 	a.layoutSettings(gtx)
+	a.layoutJev(gtx)
 	a.ui.CornerTicks(gtx, size)
 	a.flushClipboard(gtx)
 	return layout.Dimensions{Size: size}
@@ -666,25 +682,32 @@ func (a *App) layoutBody(gtx layout.Context) {
 		})
 	}
 
-	// The brief view puts what is being reviewed, and what jev makes of it,
-	// where the classic view has the revisions and the manifest.
-	left, leftTitle, leftLetter, leftCount := a.layoutRevs, "REVISIONS", "R", len(a.revs)
-	mid, midTitle, midLetter, midCount := a.layoutFiles, a.manifestTitle(), "F", len(a.files)
+	// The brief view is two columns: what there is to review, and the diff.
+	// jev's findings float over them in a sheet of their own.
 	if !a.classic() {
-		left, leftTitle, leftCount = a.layoutReview, "REVIEW", len(a.reviewRows())
-		_, hits := a.briefLines()
-		mid, midTitle, midLetter, midCount = a.layoutBrief, a.briefTitle(), "J", len(hits)
+		if a.splits.Hidden(int(PaneRevs)) {
+			rail(0, revsW, PaneRevs, "R", len(a.reviewRows()))
+		} else {
+			column(0, revsW, PaneRevs, "REVIEW", nil, a.layoutReview)
+		}
+		a.filesColX, a.drawnFilesW = revsW+1, 0
+		a.diffColX = revsW + 1
+		column(a.diffColX, size.X-a.diffColX, PaneDiff, a.diffTitle(), a.diffControls, a.layoutDiff)
+		reef.VLine(gtx, revsW, size.Y, a.ui.P.Rule)
+		a.splits.Handles(gtx, size, widths[:1])
+		return
 	}
+
 	if a.splits.Hidden(int(PaneRevs)) {
-		rail(0, revsW, PaneRevs, leftLetter, leftCount)
+		rail(0, revsW, PaneRevs, "R", len(a.revs))
 	} else {
-		column(0, revsW, PaneRevs, leftTitle, nil, left)
+		column(0, revsW, PaneRevs, "REVISIONS", nil, a.layoutRevs)
 	}
 	a.filesColX = revsW + 1
 	if a.splits.Hidden(int(PaneFiles)) {
-		rail(a.filesColX, filesW, PaneFiles, midLetter, midCount)
+		rail(a.filesColX, filesW, PaneFiles, "F", len(a.files))
 	} else {
-		column(a.filesColX, filesW, PaneFiles, midTitle, nil, mid)
+		column(a.filesColX, filesW, PaneFiles, a.manifestTitle(), nil, a.layoutFiles)
 	}
 	a.diffColX = revsW + filesW + 2
 	column(a.diffColX, size.X-a.diffColX, PaneDiff, a.diffTitle(), a.diffControls, a.layoutDiff)

@@ -76,6 +76,11 @@ type Repo interface {
 	// Branch describes one branch as a unit of review: where it forks from
 	// the trunk and the commits it has of its own.
 	Branch(ctx context.Context, name string) (Branch, error)
+
+	// CurrentBranch is the branch the working copy is on, or empty. In git
+	// that is HEAD's branch; jj has no such thing, and it is the bookmark
+	// nearest below the working copy.
+	CurrentBranch(ctx context.Context) (string, error)
 }
 
 // Branch is a named line of work, reviewed whole as the range from where it
@@ -89,6 +94,10 @@ type Branch struct {
 	Base string
 	// Commits are the branch's own commits, newest first.
 	Commits []Revision
+	// History is the branch's recent commits when it has none of its own:
+	// the trunk, or a branch everything goes straight onto, is reviewed a
+	// commit at a time and never as a range.
+	History []Revision
 }
 
 // Spec is the diff of the whole branch.

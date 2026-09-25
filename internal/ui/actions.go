@@ -18,8 +18,6 @@ func (a *App) goTo(where func(at, n int) int) {
 	switch {
 	case a.focus == PaneRevs && !a.classic():
 		a.moveReview(where)
-	case a.focus == PaneFiles && !a.classic():
-		a.moveBrief(where)
 	case a.focus == PaneRevs:
 		if n := len(a.revs); n > 0 {
 			a.selectRev(clamp(where(a.revSel, n), 0, n-1))

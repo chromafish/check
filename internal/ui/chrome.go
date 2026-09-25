@@ -275,9 +275,7 @@ func (a *App) statusLeft() string {
 	}
 	switch {
 	case a.focus == PaneRevs && !a.classic():
-		return "j/k branch or commit · enter jev · a ask · b classic · r refresh · ? keys"
-	case a.focus == PaneFiles && !a.classic():
-		return "j/k lead · enter read it · a ask · b classic · ? keys"
+		return "j/k branch or commit · enter diff · a jev · b classic · r refresh · ? keys"
 	}
 	switch a.focus {
 	case PaneRevs:
@@ -334,7 +332,6 @@ func (a *App) handleKeys(gtx layout.Context) {
 		if text, submitted := a.askField.Update(gtx); submitted {
 			if q := strings.TrimSpace(text); q != "" {
 				a.askField.Defocus(gtx)
-				a.focus = PaneFiles
 				a.askJev(q)
 			}
 		}
@@ -432,6 +429,11 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	// so a keystroke meant for it never also moves something underneath it.
 	if a.settingsOpen {
 		a.settingsKey(gtx, ke.Name)
+		return
+	}
+	// So is jev's sheet.
+	if a.jevOpen && a.repo != nil {
+		a.jevKey(gtx, ke)
 		return
 	}
 	// So is the sonda screen: the review is not on screen while it is up.
@@ -629,18 +631,14 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	case "W":
 		a.toggleWrap()
 	case "A":
-		if a.classic() {
-			a.startAsk(gtx)
-		} else {
-			a.focusAsk(gtx)
-		}
+		a.toggleJev()
 	case "B":
 		a.toggleClassic()
 	case "F":
 		switch {
 		case shift && a.classic():
 			a.startAsk(gtx)
-		case shift, !a.classic() && a.focus == PaneFiles:
+		case shift:
 			a.focusAsk(gtx)
 		case a.focus == PaneFiles:
 			a.startFileFilter(gtx)
@@ -663,10 +661,11 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 }
 
 func (a *App) moveFocus(delta int) {
-	// A column that has been put away is not a place focus can land.
+	// A column that has been put away is not a place focus can land, nor is
+	// the manifest in the brief view, which does not draw it.
 	for range int(numPanes) {
 		a.focus = Pane((int(a.focus) + delta + int(numPanes)) % int(numPanes))
-		if !a.splits.Hidden(int(a.focus)) {
+		if !a.splits.Hidden(int(a.focus)) && (a.classic() || a.focus != PaneFiles) {
 			return
 		}
 	}
@@ -679,10 +678,6 @@ func (a *App) enter(gtx layout.Context) {
 	case PaneRevs:
 		a.moveFocus(1)
 	case PaneFiles:
-		if !a.classic() {
-			a.enterBrief()
-			return
-		}
 		a.focus = PaneDiff
 	case PaneDiff:
 		a.toggleResolvedUnderCursor()
@@ -699,9 +694,9 @@ func (a *App) copyPath(gtx layout.Context) {
 
 // helpSheet lists every binding, drawn as a bordered card over the interface.
 var helpSheet = [][2]string{
-	{"B", "brief view (jev) / classic view"},
-	{"A", "ask jev about the change (⏎ asks)"},
-	{"BRIEF: J K / ENTER", "walk jev's leads / read one in the diff"},
+	{"A", "jev: what kind of change, and the lines to read first"},
+	{"JEV: J K / ENTER / /", "walk the lines / read one / ask a question"},
+	{"B", "brief view / classic view"},
 	{"TAB / SHIFT-TAB", "move between panes"},
 	{"H L ← →", "focus pane left / right"},
 	{"J K ↑ ↓", "move selection"},

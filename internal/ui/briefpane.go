@@ -8,23 +8,53 @@ import (
 	"strings"
 
 	"gioui.org/font"
+	"gioui.org/io/key"
 	"gioui.org/layout"
 
 	"github.com/chromafish/check/internal/jev"
 	"github.com/chromafish/check/reef"
 )
 
-// The brief column is the middle of the default view: a bar that takes a
-// question for jev, the answer to the last one asked, and under it the
-// standing cards. Every answer is a line of the change, and the cursor
-// walking them walks the diff with it.
+// jev's sheet floats over the review, the way help and settings do: what kind
+// of change this is, what it touches, and the lines worth reading first, each
+// under the question it answers. It is out of the way until asked for with A;
+// the diff's gutter marks the same lines meanwhile, and the header says how
+// many there are.
 
-// jevAsk is a question typed into the bar, and what came of it.
+// jevAsk is a question typed into the sheet's bar, and what came of it.
 type jevAsk struct {
 	q       string
 	running bool
 	err     string
 	hits    []briefHit
+}
+
+// toggleJev opens or closes the sheet.
+func (a *App) toggleJev() {
+	a.jevOpen = !a.jevOpen
+	if a.jevOpen {
+		a.help, a.notesOpen, a.settingsOpen = false, false, false
+		a.briefSel = 0
+	}
+}
+
+// jevControl is the diff header's control for the sheet: its label, and the
+// colour that says whether there is anything in it.
+func (a *App) jevControl() (string, reef.ColorNRGBA) {
+	ui := a.ui
+	switch {
+	case a.jev == nil:
+		return "JEV OFF", ui.P.Faint
+	case a.brief == nil || a.brief.running:
+		return "JEV …", ui.P.Muted
+	case a.brief.err != "":
+		return "JEV !", ui.P.Error
+	}
+	_, hits := a.briefLines()
+	if len(hits) == 0 {
+		return "JEV", ui.P.Muted
+	}
+	return fmt.Sprintf("JEV %d", len(hits)), ui.P.Warn
 }
 
 // askJev asks the bar's question of the change on screen.
@@ -60,9 +90,6 @@ func (a *App) askJev(q string) {
 				ask.hits = append(ask.hits, briefFill([]semScore{{c.id, c.p}}, map[string]semCand{c.id: c})...)
 			}
 			a.briefSel = 0
-			if len(ask.hits) > 0 {
-				a.showHit(ask.hits[0])
-			}
 		}
 	})
 }
@@ -73,7 +100,7 @@ func (a *App) dropJevAsk() {
 	a.jevAsk = nil
 }
 
-// focusAsk puts the caret in the bar.
+// focusAsk opens the sheet with the caret in its bar.
 func (a *App) focusAsk(gtx layout.Context) {
 	if a.askField == nil {
 		return
@@ -82,18 +109,44 @@ func (a *App) focusAsk(gtx layout.Context) {
 		a.note("asking needs a key: %s, or a key in settings", jev.EnvKey)
 		return
 	}
-	a.focus = PaneFiles
+	if !a.jevOpen {
+		a.toggleJev()
+	}
 	a.askField.Focus(gtx)
 }
 
-// briefRowKind is what one line of the column is.
+// jevKey is the keyboard while the sheet is up. Like the settings sheet it is
+// modal, so a key meant for it never also moves the review underneath.
+func (a *App) jevKey(gtx layout.Context, ke key.Event) {
+	if a.askField != nil && a.askField.Focused() {
+		if ke.Name == key.NameEscape {
+			a.askField.Defocus(gtx)
+			gtx.Execute(key.FocusCmd{Tag: nil})
+		}
+		return
+	}
+	switch ke.Name {
+	case key.NameEscape, "A":
+		a.jevOpen = false
+	case key.NameUpArrow, "K":
+		a.moveBrief(func(at, _ int) int { return at - 1 })
+	case key.NameDownArrow, "J":
+		a.moveBrief(func(at, _ int) int { return at + 1 })
+	case key.NameReturn, key.NameEnter:
+		a.enterBrief()
+	case "/", key.NameTab:
+		a.focusAsk(gtx)
+	}
+}
+
+// briefRowKind is what one line of the sheet is.
 type briefRowKind int
 
 const (
-	briefHead     briefRowKind = iota // a card's title
-	briefQuestion                     // the question under it
+	briefHead     briefRowKind = iota // a question's title
+	briefQuestion                     // the question itself
 	briefNote                         // a line of prose: pending, nothing found, an error
-	briefHitRow                       // one answer
+	briefHitRow                       // one line of the change
 )
 
 type briefLine struct {
@@ -101,28 +154,23 @@ type briefLine struct {
 	text  string
 	count string
 	hit   briefHit
-	index int  // for a hit, its position among all the column's hits
-	dim   bool // a card of a change jev reads as mechanical
+	index int // for a hit, its position among all the sheet's hits
 }
 
-// briefLines is the column as it stands, top to bottom, and the hits in it
-// in the same order.
+// briefLines is the sheet as it stands, top to bottom, and the hits in it in
+// the same order.
 func (a *App) briefLines() ([]briefLine, []briefHit) {
 	var lines []briefLine
 	var hits []briefHit
 	add := func(l briefLine) { lines = append(lines, l) }
-	addHits := func(hs []briefHit, dim bool) {
-		for _, h := range hs {
-			add(briefLine{kind: briefHitRow, hit: h, index: len(hits), dim: dim})
-			hits = append(hits, h)
-		}
+	addHit := func(h briefHit) {
+		add(briefLine{kind: briefHitRow, hit: h, index: len(hits)})
+		hits = append(hits, h)
 	}
 
 	if a.jev == nil {
-		add(briefLine{kind: briefHead, text: "NO KEY"})
-		add(briefLine{kind: briefNote, text: "Put a TypeSafe key in settings (,) or " + jev.EnvKey + ","})
-		add(briefLine{kind: briefNote, text: "and jev reads every change as it opens."})
-		add(briefLine{kind: briefNote, text: "B switches to the classic view."})
+		add(briefLine{kind: briefNote, text: "jev is off. Put a TypeSafe key in settings (,) or " + jev.EnvKey + ","})
+		add(briefLine{kind: briefNote, text: "and every change is read as it opens."})
 		return lines, hits
 	}
 
@@ -141,64 +189,78 @@ func (a *App) briefLines() ([]briefLine, []briefHit) {
 		case len(q.hits) == 0:
 			add(briefLine{kind: briefNote, text: "nothing in this change"})
 		}
-		addHits(q.hits, false)
+		for _, h := range q.hits {
+			addHit(h)
+		}
 	}
 
 	b := a.brief
 	switch {
-	case b == nil && a.diff == nil:
+	case b == nil:
 		add(briefLine{kind: briefNote, text: "waiting for the diff…"})
 		return lines, hits
-	case b == nil:
-		add(briefLine{kind: briefNote, text: "reading the diff…"})
+	case b.running:
+		add(briefLine{kind: briefNote, text: "reading the change…"})
 		return lines, hits
 	case b.err != "":
-		add(briefLine{kind: briefHead, text: "BRIEF"})
 		add(briefLine{kind: briefNote, text: b.err})
+		return lines, hits
+	case b.res == nil:
 		return lines, hits
 	}
 
-	dim := false
-	if b.res != nil && b.res.mechanical >= briefMechanical {
-		dim = true
-		add(briefLine{kind: briefHead, text: "MECHANICAL", count: fmt.Sprintf("%.0f%%", b.res.mechanical*100)})
-		add(briefLine{kind: briefNote, text: "jev reads this as a rename, reformat or generated code."})
+	res := b.res
+	if quietKinds[res.kind.id] && len(res.asked) == 0 {
+		add(briefLine{kind: briefNote, text: fmt.Sprintf("A %s change: nothing in it for review questions to point at.",
+			strings.ToLower(res.kind.label))})
+		return lines, hits
 	}
-	for i, card := range briefCards {
-		switch {
-		case b.running:
-			add(briefLine{kind: briefHead, text: card.title, count: "…", dim: dim})
-			add(briefLine{kind: briefQuestion, text: card.ask, dim: dim})
-		case b.res != nil:
-			hs := b.res.cards[i]
-			add(briefLine{kind: briefHead, text: card.title, count: fmt.Sprint(len(hs)), dim: dim || len(hs) == 0})
-			add(briefLine{kind: briefQuestion, text: card.ask, dim: dim || len(hs) == 0})
-			if len(hs) == 0 {
-				add(briefLine{kind: briefNote, text: "nothing found", dim: true})
-			}
-			addHits(hs, dim)
+	groups, empty := res.findings()
+	for i, g := range groups {
+		if len(g) == 0 {
+			continue
 		}
+		add(briefLine{kind: briefHead, text: res.asked[i].title, count: fmt.Sprint(len(g))})
+		add(briefLine{kind: briefQuestion, text: res.asked[i].ask})
+		for _, f := range g {
+			addHit(f.hit)
+		}
+	}
+	if len(hits) == 0 && len(res.asked) > 0 {
+		add(briefLine{kind: briefNote, text: "jev found nothing worth pointing at."})
+	}
+	if len(empty) > 0 {
+		titles := make([]string, len(empty))
+		for i, c := range empty {
+			titles[i] = strings.ToLower(c.title)
+		}
+		add(briefLine{kind: briefNote, text: "also asked, nothing found: " + strings.Join(titles, " · ")})
 	}
 	return lines, hits
 }
 
-// briefTitle heads the column with how far jev has got.
-func (a *App) briefTitle() string {
-	switch {
-	case a.jev == nil:
-		return "JEV · OFF"
-	case a.brief == nil:
-		return "JEV"
-	case a.brief.running:
-		return "JEV · READING"
-	case a.brief.err != "":
-		return "JEV · FAILED"
+// briefSummary is the sheet's heading: the kind of change, its languages, and
+// what it touches.
+func (a *App) briefSummary() (kind, touches string) {
+	if a.brief == nil || a.brief.res == nil || a.brief.res.kind.id == "" {
+		return "", ""
 	}
-	_, hits := a.briefLines()
-	return fmt.Sprintf("JEV · %d LEADS", len(hits))
+	res := a.brief.res
+	kind = res.kind.label
+	if len(res.languages) > 0 {
+		kind += " · " + strings.Join(res.languages, ", ")
+	}
+	if len(res.topics) > 0 {
+		labels := make([]string, len(res.topics))
+		for i, t := range res.topics {
+			labels[i] = t.label
+		}
+		touches = "touches " + strings.Join(labels, " · ")
+	}
+	return kind, touches
 }
 
-// moveBrief steps the column's cursor from hit to hit, and the diff follows.
+// moveBrief steps the sheet's cursor from hit to hit, and the diff follows.
 func (a *App) moveBrief(where func(at, n int) int) {
 	lines, hits := a.briefLines()
 	if len(hits) == 0 {
@@ -228,46 +290,71 @@ func (a *App) showHit(h briefHit) {
 	a.scrollTo(row)
 }
 
-// enterBrief goes to the hit under the cursor, and into the diff to read it.
+// enterBrief goes to the hit under the cursor: the sheet is put away and the
+// diff is left on the line, to be read.
 func (a *App) enterBrief() {
 	_, hits := a.briefLines()
 	if a.briefSel < 0 || a.briefSel >= len(hits) {
 		return
 	}
 	a.showHit(hits[a.briefSel])
+	a.jevOpen = false
 	a.focus = PaneDiff
 }
 
 // briefTag names one hit for the pointer.
 type briefTag struct{ index int }
 
-func (a *App) layoutBrief(gtx layout.Context) {
+// layoutJev draws the sheet.
+func (a *App) layoutJev(gtx layout.Context) {
+	if !a.jevOpen || a.repo == nil {
+		return
+	}
 	ui := a.ui
 	size := gtx.Constraints.Max
-	pad := gtx.Dp(reef.PadInline)
-
-	// The bar is always there: asking is what this column is for.
-	barH := 0
-	if a.askField != nil {
-		fh := ui.FieldHeight(gtx)
-		barH = fh + pad*2
-		fill(gtx, image.Pt(pad, pad), image.Pt(size.X-pad*2, fh), func(gtx layout.Context) {
-			a.askField.Layout(gtx, ui.Theme)
-		})
-		reef.HLine(gtx, size.X, barH-1, ui.P.Rule)
-	}
+	row := ui.Row(gtx)
+	pad := gtx.Dp(reef.PadCard)
+	cell := ui.Cell(gtx, reef.SizeUI, false)
+	fieldH := ui.FieldHeight(gtx)
 
 	lines, _ := a.briefLines()
-	row := ui.Row(gtx)
-	bodyH := size.Y - barH
+	w := min(size.X-gtx.Dp(80), 110*cell.X+pad*2)
+	head := row*3 + fieldH + pad
+	h := min(size.Y-gtx.Dp(80), head+row*len(lines)+pad*2)
+	x, y := (size.X-w)/2, max(gtx.Dp(24), (size.Y-h)/3)
+	ui.Sheet(gtx, image.Rect(x, y, x+w, y+h))
+
+	ly := y + pad
+	kind, touches := a.briefSummary()
+	fit(gtx, image.Pt(x+pad, ly), image.Pt(w-pad*2, row), func(gtx layout.Context) {
+		title := "JEV"
+		if kind != "" {
+			title += " · " + kind
+		}
+		hint := a.cellTextRight(gtx, w-pad*2, row, font.Normal, ui.P.Faint, "j k move · enter read · / ask · esc close")
+		a.cellText(gtx, 0, row, w-pad*2-hint-cell.X, reef.WeightLabel, ui.P.Strong, title)
+	})
+	ly += row
+	fit(gtx, image.Pt(x+pad, ly), image.Pt(w-pad*2, row), func(gtx layout.Context) {
+		a.cellText(gtx, 0, row, w-pad*2, font.Normal, ui.P.Muted, touches)
+	})
+	ly += row
+	if a.askField != nil {
+		fill(gtx, image.Pt(x+pad, ly), image.Pt(w-pad*2, fieldH), func(gtx layout.Context) {
+			a.askField.Layout(gtx, ui.Theme)
+		})
+	}
+	ly += fieldH + pad/2
+
+	bodyH := y + h - pad - ly
 	if bodyH <= 0 {
 		return
 	}
-	fill(gtx, image.Pt(0, barH), image.Pt(size.X, bodyH), func(gtx layout.Context) {
+	fill(gtx, image.Pt(x+pad/2, ly), image.Pt(w-pad, bodyH), func(gtx layout.Context) {
 		a.briefList.Layout(gtx, len(lines), func(gtx layout.Context, i int) layout.Dimensions {
-			gtx.Constraints = layout.Exact(image.Pt(size.X, row))
+			gtx.Constraints = layout.Exact(image.Pt(w-pad, row))
 			a.briefLineView(gtx, lines[i])
-			return layout.Dimensions{Size: image.Pt(size.X, row)}
+			return layout.Dimensions{Size: image.Pt(w-pad, row)}
 		})
 	})
 }
@@ -278,49 +365,47 @@ func (a *App) briefLineView(gtx layout.Context, l briefLine) {
 	pad := gtx.Dp(reef.PadInline)
 	cell := ui.Cell(gtx, reef.SizeUI, false)
 	right := size.X - pad
-	fade := func(c reef.ColorNRGBA) reef.ColorNRGBA {
-		if l.dim {
-			return ui.P.Faint
-		}
-		return c
-	}
 
 	switch l.kind {
 	case briefHead:
 		reef.HLine(gtx, size.X, 0, ui.P.RuleFaint)
 		if l.count != "" {
-			right -= a.cellTextRight(gtx, right, size.Y, reef.WeightLabel, fade(ui.P.Accent), l.count) + cell.X
+			right -= a.cellTextRight(gtx, right, size.Y, reef.WeightLabel, ui.P.Accent, l.count) + cell.X
 		}
-		a.cellText(gtx, pad, size.Y, right, reef.WeightLabel, fade(ui.P.Strong), l.text)
+		a.cellText(gtx, pad, size.Y, right, reef.WeightLabel, ui.P.Strong, l.text)
 	case briefQuestion:
-		a.cellText(gtx, pad, size.Y, right, font.Normal, fade(ui.P.Muted), l.text)
+		a.cellText(gtx, pad, size.Y, right, font.Normal, ui.P.Muted, l.text)
 	case briefNote:
-		a.cellText(gtx, pad, size.Y, right, font.Normal, fade(ui.P.Faint), l.text)
+		a.cellText(gtx, pad, size.Y, right, font.Normal, ui.P.Faint, l.text)
 	case briefHitRow:
 		tag := briefTag{l.index}
-		selected := l.index == a.briefSel
 		switch {
-		case selected:
-			ui.Selection(gtx, size, a.focus == PaneFiles)
+		case l.index == a.briefSel:
+			ui.Selection(gtx, size, true)
 		case a.hovered(tag):
 			reef.Fill(gtx, size, ui.P.Hover)
 		}
 		a.clickable(gtx, size, tag, func() {
-			a.focus = PaneFiles
 			a.briefSel = l.index
-			a.showHit(l.hit)
+			a.enterBrief()
 		})
 		h := l.hit
-		pc := ui.P.Muted
-		if h.p >= 0.5 {
-			pc = ui.P.Action
-		}
 		x := pad
-		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, fade(pc), fmt.Sprintf("%2.0f", h.p*100)) + cell.X
+		a.jevMark(gtx, x, size.Y)
+		x += cell.X * 2
 		where := fmt.Sprintf("%s:%d", path.Base(h.path), h.num)
-		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, fade(ui.P.Fg), where) + cell.X
-		a.cellText(gtx, x, size.Y, right, font.Normal, fade(a.hitColor(h)), strings.TrimSpace(h.text))
+		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Fg, where) + cell.X
+		a.cellText(gtx, x, size.Y, right, font.Normal, a.hitColor(h), strings.TrimSpace(h.text))
 	}
+}
+
+// jevMark is jev's mark on a line: a small square in the warning colour,
+// centred in a row of height h at x. It is drawn rather than set as a glyph,
+// so it is the same size in the code's face as in the interface's.
+func (a *App) jevMark(gtx layout.Context, x, h int) {
+	s := gtx.Dp(6)
+	y := (h - s) / 2
+	reef.FillRect(gtx, image.Rect(x, y, x+s, y+s), a.ui.P.Warn)
 }
 
 // hitColor sets a hit's line in the colour the diff sets it in.

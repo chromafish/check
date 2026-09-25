@@ -58,4 +58,10 @@ func TestBranchIsTheRangeOffTheTrunk(t *testing.T) {
 	if len(m.Commits) != 0 {
 		t.Errorf("main has %d commits of its own, want none", len(m.Commits))
 	}
+	if len(m.History) != 2 || m.History[0].Description != "second, with a rename" {
+		t.Errorf("main's history = %+v, want its two commits newest first", m.History)
+	}
+	if cur, err := r.CurrentBranch(ctx); err != nil || cur != "feat/x" {
+		t.Errorf("current branch = %q, %v; want feat/x", cur, err)
+	}
 }

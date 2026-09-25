@@ -382,10 +382,10 @@ func (a *App) openRepoOn(path, branch, notice string) {
 			a.rev = vcs.Revision{}
 			a.desc = ""
 			a.focus = PaneRevs
-			a.branch = nil
+			a.details, a.opened, a.current = nil, nil, ""
 			a.reviewKey = ""
 			if branch != "" {
-				a.reviewKey = "b:" + branch
+				a.reviewKey = branchKey(branch)
 			}
 			a.setTitle()
 			a.reload(true)

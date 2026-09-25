@@ -50,7 +50,26 @@ func (r *Repo) Branch(ctx context.Context, name string) (vcs.Branch, error) {
 	if err != nil {
 		return vcs.Branch{}, err
 	}
+	if len(b.Commits) == 0 {
+		b.History, err = r.Log(ctx, fmt.Sprintf("::%s ~ root()", sym), historyLimit)
+		if err != nil {
+			return vcs.Branch{}, err
+		}
+	}
 	return b, nil
+}
+
+// historyLimit is how much of a trunk's history is listed.
+const historyLimit = 100
+
+// CurrentBranch is the bookmark nearest below the working copy, which is
+// the branch a jj user is building on.
+func (r *Repo) CurrentBranch(ctx context.Context) (string, error) {
+	revs, err := r.Log(ctx, "heads(::@ & bookmarks())", 1)
+	if err != nil || len(revs) == 0 || len(revs[0].Bookmarks) == 0 {
+		return "", err
+	}
+	return revs[0].Bookmarks[0], nil
 }
 
 // quote makes a bookmark name a revset string literal, so a name holding a

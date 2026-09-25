@@ -14,17 +14,22 @@ import (
 )
 
 // The review column is the brief view's left edge: what there is to review,
-// as a person names it. The working copy comes first, then every branch.
-// The branch being reviewed opens to list its own commits, so the same
-// column goes from the branch as a whole to one commit of it and back.
+// as a person names it.
+//
+// Uncommitted work comes first, and only when there is some. Then the branch
+// the working copy is on, open onto its commits: its own ones when it has
+// left the trunk, and otherwise its recent history, since a branch everything
+// goes straight onto is reviewed a commit at a time. Every other branch
+// follows, closed until it is chosen; a branch with commits of its own is
+// then reviewed whole, and opens to list them.
 
 // reviewKind is what one row of the column stands for.
 type reviewKind int
 
 const (
-	reviewWorking reviewKind = iota // the working copy
-	reviewBranch                    // a branch, reviewed whole
-	reviewCommit                    // one commit of the open branch
+	reviewWorking reviewKind = iota // uncommitted work, or HEAD when detached
+	reviewBranch                    // a branch
+	reviewCommit                    // one commit listed under a branch
 )
 
 // reviewRow is one row of the column. key names it across reloads, which
@@ -36,6 +41,12 @@ type reviewRow struct {
 	key  string
 }
 
+func branchKey(name string) string { return "b:" + name }
+
+func commitKey(branch string, rev vcs.Revision) string {
+	return "c:" + branch + ":" + rev.CommitIDFull
+}
+
 // classic reports whether the three-column revision view is the one on screen.
 func (a *App) classic() bool { return a.settings.Classic }
 
@@ -45,22 +56,23 @@ func (a *App) toggleClassic() {
 	a.settings.Classic = !a.settings.Classic
 	a.saveSettings()
 	a.swapFractions()
+	a.jevOpen = false
 	if a.classic() {
 		a.note("classic view")
 		return
 	}
 	a.note("brief view")
-	if a.focus == PaneFiles && a.brief == nil {
+	if a.focus == PaneFiles {
 		a.focus = PaneRevs
 	}
 }
 
-// The two views divide the window differently: the brief's middle column
-// holds questions and answers, which want room, where the manifest holds
-// paths. Each view keeps its own split, dragged or not, across a switch.
+// The two views divide the window differently: the brief view is the
+// navigator and the diff, where the classic view has three columns. Each
+// view keeps its own split, dragged or not, across a switch.
 var (
 	classicFractions = [2]float32{0.22, 0.23}
-	briefFractions   = [2]float32{0.18, 0.34}
+	briefFractions   = [2]float32{0.24, 0}
 )
 
 // swapFractions puts the split of the view now on screen in place, keeping
@@ -79,35 +91,65 @@ func (a *App) swapFractions() {
 	}
 	a.otherFractions = cur
 	a.splits.SetFraction(0, next[0])
-	a.splits.SetFraction(1, next[1])
+	if next[1] > 0 {
+		a.splits.SetFraction(1, next[1])
+	}
 }
 
-// workingRev is the revision the column's first row stands for: the working
-// copy, or where there is none on screen the newest revision.
-func (a *App) workingRev() (vcs.Revision, bool) {
+// uncommitted is the working copy when it holds work not yet committed.
+func (a *App) uncommitted() (vcs.Revision, bool) {
 	for _, r := range a.revs {
-		if r.WorkingCopy {
+		if r.WorkingCopy && !r.Empty {
 			return r, true
 		}
 	}
-	if len(a.revs) > 0 {
-		return a.revs[0], true
-	}
 	return vcs.Revision{}, false
+}
+
+// branchOrder is the branches as the column lists them: the current one
+// first, the rest as the tool listed them.
+func (a *App) branchOrder() []string {
+	names := make([]string, 0, len(a.branches))
+	if a.current != "" {
+		names = append(names, a.current)
+	}
+	for _, n := range a.branches {
+		if n != a.current {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+// branchCommits is what a branch opens onto: its own commits, or its history
+// when it has none.
+func branchCommits(b *vcs.Branch) []vcs.Revision {
+	if b == nil {
+		return nil
+	}
+	if len(b.Commits) > 0 {
+		return b.Commits
+	}
+	return b.History
 }
 
 // reviewRows is the column as it stands.
 func (a *App) reviewRows() []reviewRow {
 	var rows []reviewRow
-	if w, ok := a.workingRev(); ok {
+	if w, ok := a.uncommitted(); ok {
 		rows = append(rows, reviewRow{kind: reviewWorking, rev: w, key: "@"})
+	} else if a.current == "" && len(a.revs) > 0 {
+		// Detached, with nothing uncommitted: what is checked out is still
+		// somewhere to start.
+		rows = append(rows, reviewRow{kind: reviewWorking, rev: a.revs[0], key: "@"})
 	}
-	for _, n := range a.branches {
-		rows = append(rows, reviewRow{kind: reviewBranch, name: n, key: "b:" + n})
-		if a.branch != nil && a.branch.Name == n {
-			for _, c := range a.branch.Commits {
-				rows = append(rows, reviewRow{kind: reviewCommit, name: n, rev: c, key: "c:" + c.CommitIDFull})
-			}
+	for _, n := range a.branchOrder() {
+		rows = append(rows, reviewRow{kind: reviewBranch, name: n, key: branchKey(n)})
+		if !a.opened[n] {
+			continue
+		}
+		for _, c := range branchCommits(a.details[n]) {
+			rows = append(rows, reviewRow{kind: reviewCommit, name: n, rev: c, key: commitKey(n, c)})
 		}
 	}
 	return rows
@@ -131,24 +173,29 @@ func (a *App) review(rev vcs.Revision, spec vcs.DiffSpec) {
 	a.loadFiles()
 }
 
+// reviewCommitOf reviews one commit.
+func (a *App) reviewCommitOf(rev vcs.Revision) {
+	a.review(rev, vcs.DiffSpec{Kind: vcs.DiffChange, Rev: rev.ChangeID})
+}
+
 // selectReview puts one row of the column under review.
 func (a *App) selectReview(r reviewRow) {
 	a.reviewKey = r.key
 	switch r.kind {
 	case reviewWorking:
-		a.branch = nil
-		a.branchGen++
-		a.review(r.rev, vcs.DiffSpec{Kind: vcs.DiffChange, Rev: r.rev.ChangeID})
+		a.reviewCommitOf(r.rev)
 	case reviewCommit:
-		a.review(r.rev, vcs.DiffSpec{Kind: vcs.DiffChange, Rev: r.rev.ChangeID})
+		a.reviewCommitOf(r.rev)
 	case reviewBranch:
-		a.openBranch(r.name, "")
+		a.openBranch(r.name, "", false)
 	}
 }
 
-// openBranch reads a branch and reviews it: the whole of it, or the commit
-// named by commit when that is still one of its own.
-func (a *App) openBranch(name, commit string) {
+// openBranch reads a branch, opens it in the column, and reviews it: the
+// whole of it when it has commits of its own, or the commit named by commit
+// when that is still listed under it. A branch with none of its own is only
+// opened, unless first is set, when its newest commit is reviewed.
+func (a *App) openBranch(name, commit string, first bool) {
 	if a.repo == nil {
 		return
 	}
@@ -164,28 +211,49 @@ func (a *App) openBranch(name, commit string) {
 				a.fail(err)
 				return
 			}
-			a.branch = &b
-			for _, c := range b.Commits {
+			a.adoptBranch(&b)
+			for _, c := range branchCommits(&b) {
 				if commit != "" && c.CommitIDFull == commit {
-					a.reviewKey = "c:" + commit
-					a.review(c, vcs.DiffSpec{Kind: vcs.DiffChange, Rev: c.ChangeID})
+					a.reviewKey = commitKey(name, c)
+					a.reviewCommitOf(c)
 					return
 				}
 			}
-			a.reviewKey = "b:" + name
-			a.reviewBranch(b)
+			switch commits := branchCommits(&b); {
+			case len(b.Commits) > 0:
+				a.reviewKey = branchKey(name)
+				a.reviewBranch(b)
+			case first && len(commits) > 0:
+				a.reviewKey = commitKey(name, commits[0])
+				a.reviewCommitOf(commits[0])
+			default:
+				a.reviewKey = branchKey(name)
+			}
 		}
 	})
 }
 
-// reviewBranch reviews a branch whole. A branch with no commits of its own —
-// the trunk, or one that has been merged — is reviewed as its tip, which is
-// at least something to read rather than an empty range.
-func (a *App) reviewBranch(b vcs.Branch) {
-	if len(b.Commits) == 0 {
-		a.review(b.Tip, vcs.DiffSpec{Kind: vcs.DiffChange, Rev: b.Tip.ChangeID})
-		return
+// adoptBranch records a branch's details and opens it in the column, closing
+// any other that is not the current one: the column shows where the working
+// copy is and where the cursor is, and nothing else.
+func (a *App) adoptBranch(b *vcs.Branch) {
+	if a.details == nil {
+		a.details = map[string]*vcs.Branch{}
 	}
+	a.details[b.Name] = b
+	for n := range a.opened {
+		if n != a.current {
+			delete(a.opened, n)
+		}
+	}
+	if a.opened == nil {
+		a.opened = map[string]bool{}
+	}
+	a.opened[b.Name] = true
+}
+
+// reviewBranch reviews a branch whole.
+func (a *App) reviewBranch(b vcs.Branch) {
 	// Notes and read marks are filed under the branch rather than any one
 	// commit of it, and a read mark goes stale when the tip moves.
 	rev := b.Tip
@@ -196,26 +264,43 @@ func (a *App) reviewBranch(b vcs.Branch) {
 }
 
 // restoreReview puts back what was under review after the column's lists
-// were read again, or the working copy when that is gone.
+// were read again. With nothing to put back, it starts on uncommitted work
+// when there is some, and otherwise on the newest commit of the current
+// branch.
 func (a *App) restoreReview() {
-	switch {
-	case strings.HasPrefix(a.reviewKey, "b:"):
-		name := strings.TrimPrefix(a.reviewKey, "b:")
+	has := func(name string) bool {
 		for _, n := range a.branches {
 			if n == name {
-				a.openBranch(name, "")
-				return
+				return true
 			}
 		}
-	case strings.HasPrefix(a.reviewKey, "c:") && a.branch != nil:
-		for _, n := range a.branches {
-			if n == a.branch.Name {
-				a.openBranch(n, strings.TrimPrefix(a.reviewKey, "c:"))
-				return
-			}
+		return false
+	}
+	switch key := a.reviewKey; {
+	case strings.HasPrefix(key, "b:") && has(key[2:]):
+		a.openBranch(key[2:], "", true)
+		return
+	case strings.HasPrefix(key, "c:"):
+		rest := key[2:]
+		if i := strings.LastIndex(rest, ":"); i > 0 && has(rest[:i]) {
+			a.openBranch(rest[:i], rest[i+1:], true)
+			return
+		}
+	case key == "@":
+		if w, ok := a.uncommitted(); ok {
+			a.reviewCommitOf(w)
+			return
 		}
 	}
-	a.branch = nil
+	if w, ok := a.uncommitted(); ok {
+		a.reviewKey = "@"
+		a.reviewCommitOf(w)
+		return
+	}
+	if a.current != "" {
+		a.openBranch(a.current, "", true)
+		return
+	}
 	rows := a.reviewRows()
 	if len(rows) == 0 {
 		a.selectRev(-1)
@@ -281,28 +366,35 @@ func (a *App) reviewRowView(gtx layout.Context, r reviewRow, selected bool, cell
 	right := size.X - pad
 	switch r.kind {
 	case reviewWorking:
-		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Action, "@") + cell.X
-		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Fg, r.rev.ChangeID) + cell.X
-		a.cellText(gtx, x, size.Y, right, font.Normal, ui.P.Muted, r.rev.Subject())
+		label, c := "uncommitted", ui.P.Action
+		if !r.rev.WorkingCopy || r.rev.Empty {
+			label, c = "HEAD", ui.P.Muted
+		}
+		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, c, "●") + cell.X
+		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Fg, label) + cell.X
+		if r.rev.Description != "" {
+			a.cellText(gtx, x, size.Y, right, font.Normal, ui.P.Muted, r.rev.Subject())
+		}
 	case reviewBranch:
-		open := a.branch != nil && a.branch.Name == r.name
+		open := a.opened[r.name]
 		mark := "+"
 		if open {
 			mark = "−"
 		}
-		if open && len(a.branch.Commits) > 0 {
-			n := len(a.branch.Commits)
+		if b := a.details[r.name]; b != nil && len(b.Commits) > 0 {
+			n := len(b.Commits)
 			count := fmt.Sprintf("%d commit", n)
 			if n != 1 {
 				count += "s"
 			}
 			right -= a.cellTextRight(gtx, right, size.Y, font.Normal, ui.P.Faint, count) + cell.X
+		} else if r.name == a.current {
+			right -= a.cellTextRight(gtx, right, size.Y, font.Normal, ui.P.Faint, "current") + cell.X
 		}
 		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Muted, mark) + cell.X
 		a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Accent, r.name)
 	case reviewCommit:
 		x += cell.X * 2
-		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Muted, "●") + cell.X
 		x += a.cellText(gtx, x, size.Y, right, reef.WeightLabel, ui.P.Fg, r.rev.ChangeID) + cell.X
 		c := ui.P.Fg
 		if r.rev.Description == "" {

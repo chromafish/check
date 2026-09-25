@@ -38,13 +38,12 @@ func (r *Repo) Branch(ctx context.Context, name string) (vcs.Branch, error) {
 	b := vcs.Branch{Name: name, Tip: tip[0], Base: tip[0].CommitIDFull}
 	trunk := r.trunk(ctx, name)
 	if trunk == "" {
-		return b, nil
+		return r.withHistory(ctx, b, ref)
 	}
 	base, err := r.read(ctx, "merge-base", trunk, ref)
 	if err != nil {
-		// Unrelated histories share no base; the branch is reviewed as its
-		// tip alone.
-		return b, nil
+		// Unrelated histories share no base; the branch is read as history.
+		return r.withHistory(ctx, b, ref)
 	}
 	b.Base = strings.TrimSpace(string(base))
 	out, err = r.read(ctx, "log", "--topo-order", "--decorate=full", "--format="+logFormat,
@@ -53,7 +52,34 @@ func (r *Repo) Branch(ctx context.Context, name string) (vcs.Branch, error) {
 		return vcs.Branch{}, err
 	}
 	b.Commits, err = parseLog(string(out))
+	if err != nil || len(b.Commits) > 0 {
+		return b, err
+	}
+	return r.withHistory(ctx, b, ref)
+}
+
+// historyLimit is how much of a trunk's history is listed.
+const historyLimit = 100
+
+// withHistory fills in a branch's recent commits, for one with none of its
+// own to review as a range.
+func (r *Repo) withHistory(ctx context.Context, b vcs.Branch, ref string) (vcs.Branch, error) {
+	out, err := r.read(ctx, "log", "--topo-order", "--decorate=full", "--format="+logFormat,
+		"-n", fmt.Sprint(historyLimit), ref)
+	if err != nil {
+		return vcs.Branch{}, err
+	}
+	b.History, err = parseLog(string(out))
 	return b, err
+}
+
+// CurrentBranch is HEAD's branch, or empty when HEAD is detached.
+func (r *Repo) CurrentBranch(ctx context.Context) (string, error) {
+	out, err := r.read(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // trunk is the branch others fork from: what origin's HEAD names, or else a

@@ -82,8 +82,12 @@ type semHunk struct {
 // semState is what the model is asked about. The fields are named so that a
 // question can refer to them.
 type semState struct {
-	Query string `json:"query"`
-	Lines string `json:"lines"`
+	Query string `json:"query,omitempty"`
+	// Languages and Files say what the change is made of, so that a
+	// question about it is read in the terms of the code it is about.
+	Languages string `json:"languages,omitempty"`
+	Files     string `json:"files,omitempty"`
+	Lines     string `json:"lines"`
 }
 
 // collectSem gathers the change's hunks and their lines. Only rowLine rows
@@ -434,7 +438,7 @@ type semScore struct {
 // part of the change that does not contain an answer contributes nothing,
 // however its own distribution fell.
 func semChoose(ctx context.Context, c *jev.Client, query, qid, instr, present string, opts []semOpt, most int) ([]string, error) {
-	got, _, err := semMulti(ctx, c, query, []semQ{{id: qid, present: "present", choice: instr, whether: present}}, opts, most, nil)
+	got, _, err := semMulti(ctx, c, semState{Query: query}, []semQ{{id: qid, present: "present", choice: instr, whether: present}}, opts, most, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +453,7 @@ func semChoose(ctx context.Context, c *jev.Client, query, qid, instr, present st
 // options into requests the way semChoose does, and returns each question's
 // ranked answers with their probabilities. extra is asked alongside the
 // first request only, and its answers are returned as they came.
-func semMulti(ctx context.Context, c *jev.Client, query string, qs []semQ, opts []semOpt, most int, extra map[string]jev.Question) (map[string][]semScore, map[string]jev.Answer, error) {
+func semMulti(ctx context.Context, c *jev.Client, base semState, qs []semQ, opts []semOpt, most int, extra map[string]jev.Question) (map[string][]semScore, map[string]jev.Answer, error) {
 	var batches [][]semOpt
 	from, chars := 0, 0
 	for i, o := range opts {
@@ -490,7 +494,9 @@ func semMulti(ctx context.Context, c *jev.Client, query string, qs []semQ, opts 
 				questions[id] = q
 			}
 		}
-		resp, err := c.Ask(ctx, semState{Query: query, Lines: doc.String()}, questions)
+		state := base
+		state.Lines = doc.String()
+		resp, err := c.Ask(ctx, state, questions)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -675,7 +681,7 @@ func semLines(ctx context.Context, c *jev.Client, query string, cands []semCand)
 		index[c.id] = i
 		opts[i] = semOpt{id: c.id, desc: c.desc, line: c.id + "|" + c.text}
 	}
-	got, _, err := semMulti(ctx, c, query, []semQ{{
+	got, _, err := semMulti(ctx, c, semState{Query: query}, []semQ{{
 		id: "line", present: "present",
 		choice: "`lines` is a code change, one line per row, each row prefixed with its id and then " +
 			"the +, - or space that says whether the line was added, removed or left alone. " +
