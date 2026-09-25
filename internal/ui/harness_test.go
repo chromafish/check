@@ -19,6 +19,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
+	"github.com/chromafish/check/internal/jev"
 	"github.com/chromafish/check/internal/repo"
 	"github.com/chromafish/check/internal/state"
 
@@ -58,6 +59,13 @@ func newGitHarness(t *testing.T) *harness {
 
 func openHarness(t *testing.T, dir string) *harness {
 	t.Helper()
+	return openHarnessView(t, dir, false)
+}
+
+// openHarnessView opens the repository in the brief view when brief is set,
+// and in the classic view otherwise.
+func openHarnessView(t *testing.T, dir string, brief bool) *harness {
+	t.Helper()
 	ctx := context.Background()
 	repo, err := repo.Open(ctx, dir)
 	if err != nil {
@@ -66,6 +74,15 @@ func openHarness(t *testing.T, dir string) *harness {
 	// Review state must not leak into the real one, or between tests.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	// Nor may a key in the environment send a test's diff to the service.
+	t.Setenv(jev.EnvKey, "")
+	// Most of what is tested is the classic view's; the brief's own tests
+	// open the default instead.
+	if !brief {
+		if err := state.SaveSettings(state.Settings{Classic: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	query := "all()"
 	if repo.Info().Name == "git" {

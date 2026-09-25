@@ -6,6 +6,7 @@ import (
 	"image"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -158,6 +159,33 @@ type App struct {
 	askSpots []lineSpot
 	askGen   int
 
+	// The brief: the standing questions asked of the change on screen, the
+	// answers kept for changes already asked about, and how strongly they
+	// point into each file. briefSel is the hit the brief column's cursor
+	// is on.
+	brief      *brief
+	briefCache map[string]*briefResult
+	briefGen   int
+	briefSel   int
+	heat       map[string]float64
+	briefList  layout.List
+
+	// The jev bar at the head of the brief column, and the last question
+	// asked in it.
+	askField  *reef.Field
+	jevAsk    *jevAsk
+	jevAskGen int
+
+	// The review column: every branch, the one open with its commits, and
+	// which row is under review, named so that a reload can find it again.
+	branches   []string
+	branch     *vcs.Branch
+	branchGen  int
+	reviewKey  string
+	reviewList layout.List
+	// otherFractions is the split of the view not on screen.
+	otherFractions [2]float32
+
 	// Manifest filter, open on the same terms as find.
 	fileFilter *reef.Field
 	filterOpen bool
@@ -232,13 +260,17 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 		dir:      absDir(dir, repo),
 		store:    store,
 		revset:   revset,
-		splits:   reef.NewSplits(0.22, 0.23),
+		splits:   reef.NewSplits(classicFractions[0], classicFractions[1]),
 		recent:   state.LoadRecent(),
 		settings: state.LoadSettings(),
 		pinFile:  -1,
 	}
 	a.applySettings()
 	a.noWrap = a.settings.NoWrap
+	if !a.classic() {
+		a.splits.SetFraction(0, briefFractions[0])
+		a.splits.SetFraction(1, briefFractions[1])
+	}
 	if repo != nil {
 		a.repoName = filepath.Base(repo.Root())
 		a.recent = state.RememberRecent(repo.Root())
@@ -253,6 +285,8 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 	if !a.settings.NoSemanticFind {
 		a.jev = jev.Resolve(a.settings.TypeSafeKey)
 	}
+	a.askField = reef.NewField("")
+	a.askField.Placeholder = "ask jev about this change"
 	a.fileFilter = reef.NewField("")
 	a.fileFilter.Placeholder = "filter files"
 	a.findAt = -1
@@ -262,6 +296,8 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 	a.hoverRow = -1
 	a.revList.Axis = layout.Vertical
 	a.fileList.Axis = layout.Vertical
+	a.briefList.Axis = layout.Vertical
+	a.reviewList.Axis = layout.Vertical
 	a.diffList.Axis = layout.Vertical
 	a.pairList.Axis = layout.Vertical
 	return a
@@ -443,16 +479,24 @@ func (a *App) reload(snapshot bool) {
 			return func() { a.fail(err) }
 		}
 		vcs.BuildGraph(revs)
+		// A repository with no branches, or a tool that will not list them,
+		// still has its working copy to review.
+		branches, _ := a.repo.Branches(ctx)
 		return func() {
 			slog.Info("revset evaluated", "revset", revset, "revisions", len(revs))
 			a.failure = ""
 			a.revs = revs
+			a.branches = branches
 			a.revSel = 0
 			for i, r := range revs {
 				if r.ChangeID == keep {
 					a.revSel = i
 					break
 				}
+			}
+			if !a.classic() {
+				a.restoreReview()
+				return
 			}
 			a.selectRev(a.revSel)
 		}
@@ -468,9 +512,7 @@ func (a *App) selectRev(i int) {
 		return
 	}
 	a.revSel = i
-	a.rev = a.revs[i]
-	a.spec = vcs.DiffSpec{Kind: vcs.DiffChange, Rev: a.rev.ChangeID}
-	a.loadFiles()
+	a.review(a.revs[i], vcs.DiffSpec{Kind: vcs.DiffChange, Rev: a.revs[i].ChangeID})
 }
 
 func (a *App) loadFiles() {
@@ -484,6 +526,8 @@ func (a *App) loadFiles() {
 	a.files = nil
 	a.diff = nil
 	a.fileSel = 0
+	a.dropBrief()
+	a.dropJevAsk()
 
 	a.background(func(ctx context.Context) func() {
 		files, err := a.repo.Files(ctx, spec)
@@ -609,16 +653,25 @@ func (a *App) layoutBody(gtx layout.Context) {
 		})
 	}
 
+	// The brief view puts what is being reviewed, and what jev makes of it,
+	// where the classic view has the revisions and the manifest.
+	left, leftTitle, leftLetter, leftCount := a.layoutRevs, "REVISIONS", "R", len(a.revs)
+	mid, midTitle, midLetter, midCount := a.layoutFiles, a.manifestTitle(), "F", len(a.files)
+	if !a.classic() {
+		left, leftTitle, leftCount = a.layoutReview, "REVIEW", len(a.reviewRows())
+		_, hits := a.briefLines()
+		mid, midTitle, midLetter, midCount = a.layoutBrief, a.briefTitle(), "J", len(hits)
+	}
 	if a.splits.Hidden(int(PaneRevs)) {
-		rail(0, revsW, PaneRevs, "R", len(a.revs))
+		rail(0, revsW, PaneRevs, leftLetter, leftCount)
 	} else {
-		column(0, revsW, PaneRevs, "REVISIONS", nil, a.layoutRevs)
+		column(0, revsW, PaneRevs, leftTitle, nil, left)
 	}
 	a.filesColX = revsW + 1
 	if a.splits.Hidden(int(PaneFiles)) {
-		rail(a.filesColX, filesW, PaneFiles, "F", len(a.files))
+		rail(a.filesColX, filesW, PaneFiles, midLetter, midCount)
 	} else {
-		column(a.filesColX, filesW, PaneFiles, a.manifestTitle(), nil, a.layoutFiles)
+		column(a.filesColX, filesW, PaneFiles, midTitle, nil, mid)
 	}
 	a.diffColX = revsW + filesW + 2
 	column(a.diffColX, size.X-a.diffColX, PaneDiff, a.diffTitle(), a.diffControls, a.layoutDiff)
@@ -640,6 +693,9 @@ func (a *App) manifestTitle() string {
 
 func (a *App) diffTitle() string {
 	if a.spec.Kind == vcs.DiffRange {
+		if strings.HasPrefix(a.rev.ChangeIDFull, "branch:") {
+			return "DIFF · " + strings.ToUpper(a.rev.ChangeID)
+		}
 		return "DIFF · RANGE"
 	}
 	return "DIFF"

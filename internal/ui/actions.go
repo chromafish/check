@@ -15,13 +15,17 @@ func (a *App) moveTo(pos int) { a.goTo(func(_, _ int) int { return pos }) }
 // land; the result is clamped, so a jump past either end simply stops there.
 func (a *App) goTo(where func(at, n int) int) {
 	a.clearSelection()
-	switch a.focus {
-	case PaneRevs:
+	switch {
+	case a.focus == PaneRevs && !a.classic():
+		a.moveReview(where)
+	case a.focus == PaneFiles && !a.classic():
+		a.moveBrief(where)
+	case a.focus == PaneRevs:
 		if n := len(a.revs); n > 0 {
 			a.selectRev(clamp(where(a.revSel, n), 0, n-1))
 			a.scrollList(&a.revList, a.revSel)
 		}
-	case PaneFiles:
+	case a.focus == PaneFiles:
 		vis := a.visibleFiles()
 		if n := len(vis); n > 0 {
 			// Map current absolute to visible index.
@@ -37,7 +41,7 @@ func (a *App) goTo(where func(at, n int) int) {
 			a.selectFile(abs)
 			a.scrollList(&a.fileList, nextVis)
 		}
-	case PaneDiff:
+	case a.focus == PaneDiff:
 		if a.diff == nil {
 			return
 		}

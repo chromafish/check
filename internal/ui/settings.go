@@ -481,7 +481,7 @@ func (a *App) layoutSettings(gtx layout.Context) {
 	} else if a.jev == nil {
 		note(ly, "no key")
 	} else {
-		note(ly, "ready · SHIFT-F")
+		note(ly, "ready · reads every change")
 	}
 	ly += row
 	if a.keyField != nil {
@@ -490,7 +490,7 @@ func (a *App) layoutSettings(gtx layout.Context) {
 		})
 	}
 	ly += fieldH
-	label(ly, ui.P.Faint, "a TypeSafe key lets SHIFT-F ask about the diff")
+	label(ly, ui.P.Faint, "with a TypeSafe key, jev briefs every change as it opens")
 	ly += row
 
 	ly += half

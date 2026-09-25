@@ -322,7 +322,10 @@ func (a *App) loadDiff() {
 					err = fmt.Errorf("the diff stopped responding after %s", diffStall)
 				}
 				a.fail(err)
+				return
 			}
+			// The whole change is in, so it can be read for the brief.
+			a.startBrief()
 		}
 	})
 }

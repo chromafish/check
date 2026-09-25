@@ -270,6 +270,12 @@ func (a *App) statusLeft() string {
 	if a.sondaOpen() {
 		return "r run · x stop · j/k move · tab pane · / filter · l level · w raw · esc back"
 	}
+	switch {
+	case a.focus == PaneRevs && !a.classic():
+		return "j/k branch or commit · enter jev · a ask · b classic · r refresh · ? keys"
+	case a.focus == PaneFiles && !a.classic():
+		return "j/k lead · enter read it · a ask · b classic · ? keys"
+	}
 	switch a.focus {
 	case PaneRevs:
 		return fmt.Sprintf("j/k move · enter files · / %s · r refresh · ? keys",
@@ -311,6 +317,16 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.adoptKey()
 		}
 		editing = editing || a.keyField.Focused()
+	}
+	if a.askField != nil {
+		if text, submitted := a.askField.Update(gtx); submitted {
+			if q := strings.TrimSpace(text); q != "" {
+				a.askField.Defocus(gtx)
+				a.focus = PaneFiles
+				a.askJev(q)
+			}
+		}
+		editing = editing || a.askField.Focused()
 	}
 	findEditing := a.updateFind(gtx)
 	fileEditing := a.updateFileFilter(gtx)
@@ -364,7 +380,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 // as a list so the filters and the help sheet cannot drift apart.
 var commandKeys = []key.Name{
 	"J", "K", "H", "L", "G", "V", "C", "D", "R", "T", "N", "P", "Y",
-	"Z", "E", "S", "X", "W", "1", "2", "F", "U", "O",
+	"Z", "E", "S", "X", "W", "1", "2", "F", "U", "O", "A", "B",
 	// The settings sheet's own keys. Outside it they are bound to nothing, and
 	// a key bound to nothing is not a key another pane gets to reinterpret.
 	",", "-", "=",
@@ -431,6 +447,11 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	if editing {
 		switch ke.Name {
 		case key.NameEscape:
+			if a.askField != nil && a.askField.Focused() {
+				a.askField.Defocus(gtx)
+				gtx.Execute(key.FocusCmd{Tag: nil})
+				return
+			}
 			if a.findField != nil && a.findField.Focused() {
 				a.closeFind(gtx)
 				return
@@ -583,10 +604,20 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		a.toggleSplit()
 	case "W":
 		a.toggleWrap()
+	case "A":
+		if a.classic() {
+			a.startAsk(gtx)
+		} else {
+			a.focusAsk(gtx)
+		}
+	case "B":
+		a.toggleClassic()
 	case "F":
 		switch {
-		case shift:
+		case shift && a.classic():
 			a.startAsk(gtx)
+		case shift, !a.classic() && a.focus == PaneFiles:
+			a.focusAsk(gtx)
 		case a.focus == PaneFiles:
 			a.startFileFilter(gtx)
 		default:
@@ -624,6 +655,10 @@ func (a *App) enter(gtx layout.Context) {
 	case PaneRevs:
 		a.moveFocus(1)
 	case PaneFiles:
+		if !a.classic() {
+			a.enterBrief()
+			return
+		}
 		a.focus = PaneDiff
 	case PaneDiff:
 		a.toggleResolvedUnderCursor()
@@ -640,6 +675,9 @@ func (a *App) copyPath(gtx layout.Context) {
 
 // helpSheet lists every binding, drawn as a bordered card over the interface.
 var helpSheet = [][2]string{
+	{"B", "brief view (jev) / classic view"},
+	{"A", "ask jev about the change (⏎ asks)"},
+	{"BRIEF: J K / ENTER", "walk jev's leads / read one in the diff"},
 	{"TAB / SHIFT-TAB", "move between panes"},
 	{"H L ← →", "focus pane left / right"},
 	{"J K ↑ ↓", "move selection"},

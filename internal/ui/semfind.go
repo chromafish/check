@@ -62,10 +62,12 @@ const (
 // semCand is one line offered to the model, and the row it came from.
 type semCand struct {
 	id   string
+	path string
 	row  int
 	at   lineSpot // row, as a place that survives the rows being rebuilt
 	text string   // the diff line, with its +/- marker
 	desc string   // how the option is described in criteria
+	p    float64  // the model's share for it, once it has been asked about
 }
 
 // semHunk is one hunk's worth of candidates, with the label the first stage
@@ -105,6 +107,7 @@ func collectSem(d *DiffDoc) []semHunk {
 			n++
 			c := semCand{
 				id:   fmt.Sprintf("L%04d", n),
+				path: h.path,
 				row:  i,
 				at:   d.lineSpot(i),
 				text: semMark(r.Line) + semClip(r.Line.Text),
@@ -410,12 +413,43 @@ func semWhole(hunks []semHunk) ([]semCand, bool) {
 // describes it, and the row the state document lists it on.
 type semOpt struct{ id, desc, line string }
 
+// semQ is one choice asked over a set of options, with the presence question
+// that says whether its winner means anything. Several are asked together
+// over the same options when a review opens, which costs one request rather
+// than one each: the service answers the questions in parallel.
+type semQ struct {
+	id, present     string // the ids the two questions are filed under
+	choice, whether string // their instructions
+}
+
+// semScore is one option's share of a choice.
+type semScore struct {
+	id string
+	p  float64
+}
+
 // semChoose offers opts as one choice, divided into as many requests as the
 // limits on options and size make it take, and returns the ids that answer
 // query, best first. Each request carries its own presence question, and a
 // part of the change that does not contain an answer contributes nothing,
 // however its own distribution fell.
 func semChoose(ctx context.Context, c *jev.Client, query, qid, instr, present string, opts []semOpt, most int) ([]string, error) {
+	got, _, err := semMulti(ctx, c, query, []semQ{{id: qid, present: "present", choice: instr, whether: present}}, opts, most, nil)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(got[qid]))
+	for i, s := range got[qid] {
+		ids[i] = s.id
+	}
+	return ids, nil
+}
+
+// semMulti asks every question in qs over the same options, dividing the
+// options into requests the way semChoose does, and returns each question's
+// ranked answers with their probabilities. extra is asked alongside the
+// first request only, and its answers are returned as they came.
+func semMulti(ctx context.Context, c *jev.Client, query string, qs []semQ, opts []semOpt, most int, extra map[string]jev.Question) (map[string][]semScore, map[string]jev.Answer, error) {
 	var batches [][]semOpt
 	from, chars := 0, 0
 	for i, o := range opts {
@@ -433,8 +467,12 @@ func semChoose(ctx context.Context, c *jev.Client, query, qid, instr, present st
 		batches = batches[:semMaxRequests]
 	}
 
-	probs := map[string]float64{}
-	for _, b := range batches {
+	probs := make(map[string]map[string]float64, len(qs))
+	for _, q := range qs {
+		probs[q.id] = map[string]float64{}
+	}
+	var extras map[string]jev.Answer
+	for n, b := range batches {
 		criteria := make(map[string]string, len(b))
 		var doc strings.Builder
 		for _, o := range b {
@@ -442,25 +480,46 @@ func semChoose(ctx context.Context, c *jev.Client, query, qid, instr, present st
 			doc.WriteString(o.line)
 			doc.WriteByte('\n')
 		}
-		resp, err := c.Ask(ctx, semState{Query: query, Lines: doc.String()}, map[string]jev.Question{
-			qid:       jev.Choice(instr, criteria),
-			"present": jev.Noul(present),
-		})
+		questions := make(map[string]jev.Question, len(qs)*2+len(extra))
+		for _, q := range qs {
+			questions[q.id] = jev.Choice(q.choice, criteria)
+			questions[q.present] = jev.Noul(q.whether)
+		}
+		if n == 0 {
+			for id, q := range extra {
+				questions[id] = q
+			}
+		}
+		resp, err := c.Ask(ctx, semState{Query: query, Lines: doc.String()}, questions)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if resp.Answers["present"].Noul < semPresentMin {
-			continue
+		if n == 0 && len(extra) > 0 {
+			extras = make(map[string]jev.Answer, len(extra))
+			for id := range extra {
+				extras[id] = resp.Answers[id]
+			}
 		}
-		for id, p := range resp.Answers[qid].Probabilities {
-			// The model answers only with options it was offered, but that is
-			// its promise and not something to index by unchecked.
-			if _, ok := criteria[id]; ok {
-				probs[id] = p
+		for _, q := range qs {
+			if resp.Answers[q.present].Noul < semPresentMin {
+				continue
+			}
+			for id, p := range resp.Answers[q.id].Probabilities {
+				// The model answers only with options it was offered, but that
+				// is its promise and not something to index by unchecked.
+				if _, ok := criteria[id]; ok {
+					probs[q.id][id] = p
+				}
 			}
 		}
 	}
-	return semRank(probs, semHitMin, most), nil
+	out := make(map[string][]semScore, len(qs))
+	for _, q := range qs {
+		for _, id := range semRank(probs[q.id], semHitMin, most) {
+			out[q.id] = append(out[q.id], semScore{id, probs[q.id][id]})
+		}
+	}
+	return out, extras, nil
 }
 
 // semFiles narrows a change of very many hunks to the files worth reading,
@@ -616,19 +675,22 @@ func semLines(ctx context.Context, c *jev.Client, query string, cands []semCand)
 		index[c.id] = i
 		opts[i] = semOpt{id: c.id, desc: c.desc, line: c.id + "|" + c.text}
 	}
-	ranked, err := semChoose(ctx, c, query, "line",
-		"`lines` is a code change, one line per row, each row prefixed with its id and then "+
-			"the +, - or space that says whether the line was added, removed or left alone. "+
+	got, _, err := semMulti(ctx, c, query, []semQ{{
+		id: "line", present: "present",
+		choice: "`lines` is a code change, one line per row, each row prefixed with its id and then " +
+			"the +, - or space that says whether the line was added, removed or left alone. " +
 			"Which line is the one that answers `query`?",
-		"Do the lines in `lines` answer `query`? Answer no if the lines are about "+
+		whether: "Do the lines in `lines` answer `query`? Answer no if the lines are about " +
 			"something else, however close.",
-		opts, semMaxHits)
+	}}, opts, semMaxHits, nil)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]semCand, 0, len(ranked))
-	for _, id := range ranked {
-		out = append(out, cands[index[id]])
+	out := make([]semCand, 0, len(got["line"]))
+	for _, s := range got["line"] {
+		c := cands[index[s.id]]
+		c.p = s.p
+		out = append(out, c)
 	}
 	return out, nil
 }

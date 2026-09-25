@@ -29,6 +29,9 @@ type Settings struct {
 	// might be about to a third party, so this is how someone who has a key
 	// for one repository declines to use it in another.
 	NoSemanticFind bool `json:"no_semantic_find,omitempty"`
+	// Classic is the three-column revision view instead of the brief. Zero
+	// means the brief: it is the default, and only leaving it is recorded.
+	Classic bool `json:"classic,omitempty"`
 	// TypeSafeKey is the API key asking a question uses. It is written here
 	// by hand: the settings sheet is a list of choices with no text entry,
 	// and this file is rewritten whenever a preference changes, so the key

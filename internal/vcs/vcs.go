@@ -68,6 +68,32 @@ type Repo interface {
 	// method that writes, and it writes only to dir and to the tool's
 	// records of it.
 	Workspace(ctx context.Context, dir, rev string) error
+
+	// Branches lists the repository's local branches — bookmarks in jj —
+	// most recently moved first.
+	Branches(ctx context.Context) ([]string, error)
+
+	// Branch describes one branch as a unit of review: where it forks from
+	// the trunk and the commits it has of its own.
+	Branch(ctx context.Context, name string) (Branch, error)
+}
+
+// Branch is a named line of work, reviewed whole as the range from where it
+// leaves the trunk to its tip.
+type Branch struct {
+	Name string
+	// Tip is the revision the name points at.
+	Tip Revision
+	// Base is the commit the branch forks from, the "from" side of its
+	// range. It is the tip itself for a branch with no commits of its own.
+	Base string
+	// Commits are the branch's own commits, newest first.
+	Commits []Revision
+}
+
+// Spec is the diff of the whole branch.
+func (b Branch) Spec() DiffSpec {
+	return DiffSpec{Kind: DiffRange, From: b.Base, To: b.Tip.CommitIDFull}
 }
 
 // Info describes the tool backing a repository.
