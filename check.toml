@@ -1,6 +1,0 @@
-[[target]]
-name = "check"
-dir = "."
-build = ["make", "build"]
-run = ["./check"]
-env = { REVIEW_LOG = "1", REVIEW_LOG_LEVEL = "info" }

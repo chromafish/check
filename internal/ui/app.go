@@ -52,9 +52,6 @@ type App struct {
 	repoName string
 	backend  vcs.Info
 
-	// The sonda screen, made the first time it is entered.
-	sonda *sondaScreen
-
 	// Preferences, and the sheet that sets them: the colour schemes and
 	// typefaces found on this machine, and where the cursor is in each of the
 	// two lists.
@@ -384,7 +381,6 @@ func (a *App) Run() error {
 	for {
 		switch e := a.win.Event().(type) {
 		case app.DestroyEvent:
-			a.shutdownSonda()
 			return e.Err
 		case app.FrameEvent:
 			done := traceFrame()
@@ -630,8 +626,6 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	switch {
 	case a.repo == nil:
 		body = a.layoutOpen
-	case a.sondaOpen():
-		body = a.layoutSonda
 	}
 
 	// The two strips are fixed in device pixels, so the chrome holds still as

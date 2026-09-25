@@ -160,13 +160,6 @@ func (a *App) layoutStatus(gtx layout.Context) {
 	}) + gtx.Dp(reef.Sp3)
 	rightX -= a.controlRight(gtx, rightX, size.Y, tagSettings, "TYPE  ⌘,", ui.P.Muted,
 		a.toggleSettings) + gtx.Dp(reef.Sp3)
-	if a.repo != nil {
-		c := ui.P.Muted
-		if a.sondaOpen() {
-			c = ui.P.Action
-		}
-		rightX -= a.controlRight(gtx, rightX, size.Y, tagSonda, "SONDA  S", c, a.toggleSonda) + gtx.Dp(reef.Sp3)
-	}
 
 	if n := a.openCount(); n > 0 {
 		label := fmt.Sprintf("COPY %d NOTES FOR AGENT", n)
@@ -270,9 +263,6 @@ func (a *App) statusLeft() string {
 		}
 		return "⌘o choose a folder · tab paste a link · j/k recent · enter open"
 	}
-	if a.sondaOpen() {
-		return "r run · x stop · j/k move · tab pane · / filter · l level · w raw · esc back"
-	}
 	switch {
 	case a.focus == PaneRevs && !a.classic():
 		return "j/k branch or commit · enter diff · a jev · b classic · r refresh · ? keys"
@@ -304,10 +294,6 @@ func (a *App) handleKeys(gtx layout.Context) {
 	if a.draft != nil {
 		a.draft.field.Update(gtx)
 		editing = editing || a.draft.field.Focused()
-	}
-	if a.sonda != nil {
-		a.sonda.filter.Update(gtx)
-		editing = editing || a.sonda.filter.Focused()
 	}
 	// A field that submits swallows Return, so the settings sheet's fields
 	// are taken here rather than from the sheet's own keys.
@@ -434,11 +420,6 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	// So is jev's sheet.
 	if a.jevOpen && a.repo != nil {
 		a.jevKey(gtx, ke)
-		return
-	}
-	// So is the sonda screen: the review is not on screen while it is up.
-	if a.sondaOpen() {
-		a.sondaKey(gtx, ke, editing)
 		return
 	}
 
@@ -572,8 +553,6 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	case "R":
 		a.reload(true)
 		a.note("refreshed")
-	case "S":
-		a.openSonda()
 	case "/":
 		// Shifted punctuation arrives as the unshifted key with a modifier, so
 		// "?" is spelled this way rather than as its own binding.
@@ -728,9 +707,6 @@ var helpSheet = [][2]string{
 	{"SHIFT-E", "whole file, and back to the hunks"},
 	{"1 / 2", "hide or show the revisions / manifest column"},
 	{"Z", "code only: both trees away, and back"},
-	{"S", "sonda: run the change beside its baseline, and back"},
-	{"SONDA: R / X", "run both / stop both"},
-	{"SONDA: / L W", "filter by text / by level / raw lines"},
 	{"T", "invert palette"},
 	{", / CMD-,", "settings: typeface and size"},
 	{"SHIFT-/", "this sheet"},

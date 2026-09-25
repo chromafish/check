@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-
-	"github.com/chromafish/check/internal/sonda"
 )
 
 func TestErrorsAloneUnlessAskedForMore(t *testing.T) {
@@ -44,20 +42,21 @@ func TestANameThatIsNotALevelIsReportedAndFallsBackToErrors(t *testing.T) {
 	}
 }
 
-// Each line is logfmt as sonda reads it, with the level and message lifted
+// Each line is logfmt as Parse reads it, with the level and message lifted
 // and the rest left as fields.
 func TestLinesAreLogfmt(t *testing.T) {
 	var buf bytes.Buffer
 	l, _ := New(&buf, "info")
 	l.Info("repo opened", "vcs", "jj", "root", "/tmp/a dir")
-	got := sonda.Parse(strings.TrimSpace(buf.String()))
-	if got.Format != sonda.Logfmt {
-		t.Fatalf("the line %q did not parse as logfmt", got.Raw)
+	line := strings.TrimSpace(buf.String())
+	got := Parse(line)
+	if !got.OK {
+		t.Fatalf("the line %q did not parse as logfmt", line)
 	}
-	if got.Severity != sonda.Info || got.Message != "repo opened" || got.Time.IsZero() {
+	if got.Level != "INFO" || got.Message != "repo opened" || got.Time.IsZero() {
 		t.Errorf("parsed as %+v", got)
 	}
-	if len(got.Fields) != 2 || got.Fields[0] != (sonda.Field{Key: "vcs", Value: "jj"}) || got.Fields[1] != (sonda.Field{Key: "root", Value: "/tmp/a dir"}) {
+	if len(got.Fields) != 2 || got.Fields[0] != (Field{Key: "vcs", Value: "jj"}) || got.Fields[1] != (Field{Key: "root", Value: "/tmp/a dir"}) {
 		t.Errorf("fields = %+v", got.Fields)
 	}
 }

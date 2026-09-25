@@ -1,6 +1,5 @@
 // Package journal opens the behaviour log: one line for each decision the
-// program makes, for a bug report to be filed with and for sonda to compare
-// between two revisions.
+// program makes, for a bug report to be filed with.
 //
 // The log is slog's default logger. A package writes to it with slog.Info
 // and slog.Error and has nothing passed down to it; off, the default is a

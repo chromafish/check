@@ -8,7 +8,7 @@ import (
 
 	"gioui.org/io/key"
 
-	"github.com/chromafish/check/internal/sonda"
+	"github.com/chromafish/check/internal/journal"
 )
 
 // captureLog points the behaviour log at a buffer for the life of the test.
@@ -21,17 +21,16 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// entries reads the captured log back through sonda's own parser, which is
-// the reader the log is written for.
-func entries(t *testing.T, buf *bytes.Buffer) []sonda.Log {
+// entries reads the captured log back.
+func entries(t *testing.T, buf *bytes.Buffer) []journal.Entry {
 	t.Helper()
-	var logs []sonda.Log
+	var logs []journal.Entry
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 		if line == "" {
 			continue
 		}
-		l := sonda.Parse(line)
-		if l.Format != sonda.Logfmt {
+		l := journal.Parse(line)
+		if !l.OK {
 			t.Errorf("a line of the log is not logfmt: %q", line)
 		}
 		logs = append(logs, l)
@@ -39,14 +38,7 @@ func entries(t *testing.T, buf *bytes.Buffer) []sonda.Log {
 	return logs
 }
 
-func field(l sonda.Log, key string) string {
-	for _, f := range l.Fields {
-		if f.Key == key {
-			return f.Value
-		}
-	}
-	return ""
-}
+func field(l journal.Entry, key string) string { return l.Field(key) }
 
 // Opening a repository and reading a change writes each decision along the
 // way, with paths and counts in fields and the message the same from one run
@@ -57,7 +49,7 @@ func TestTheLogRecordsAReview(t *testing.T) {
 	h.selectFileNamed("main.go")
 
 	var msgs []string
-	byMsg := map[string]sonda.Log{}
+	byMsg := map[string]journal.Entry{}
 	for _, l := range entries(t, buf) {
 		msgs = append(msgs, l.Message)
 		if _, seen := byMsg[l.Message]; !seen {
@@ -82,7 +74,7 @@ func TestTheLogRecordsAReview(t *testing.T) {
 		t.Errorf("diff parsed = %+v", l.Fields)
 	}
 	// The one the change a845346 would have shown as a one-line diff.
-	var lit []sonda.Log
+	var lit []journal.Entry
 	for _, l := range entries(t, buf) {
 		if l.Message == "file selected" {
 			lit = append(lit, l)
@@ -123,12 +115,12 @@ func TestStatusAndErrorsReachTheLog(t *testing.T) {
 	h.press(key.NameReturn, 0)
 	h.press("V", 0)
 
-	var errs, notes []sonda.Log
+	var errs, notes []journal.Entry
 	for _, l := range entries(t, buf) {
-		switch l.Severity {
-		case sonda.Error:
+		switch l.Level {
+		case "ERROR":
 			errs = append(errs, l)
-		case sonda.Info:
+		case "INFO":
 			notes = append(notes, l)
 		}
 	}
@@ -143,35 +135,5 @@ func TestStatusAndErrorsReachTheLog(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("marking a file read did not reach the log")
-	}
-}
-
-func TestSondaWritesItsOwnWork(t *testing.T) {
-	buf := captureLog(t)
-	h := newHarness(t)
-	declareTarget(t, h.app.repo.Root(), `echo '{"level":"info","msg":"a"}'; echo 'k=v'; echo plain`)
-	buf.Reset()
-	h.press("S", 0)
-	h.press("R", 0)
-	h.until("both runs ending", h.sondaEnded)
-
-	byMsg := map[string][]sonda.Log{}
-	for _, l := range entries(t, buf) {
-		byMsg[l.Message] = append(byMsg[l.Message], l)
-	}
-	if got := byMsg["target chosen"]; len(got) != 1 || field(got[0], "target") != "probe" || field(got[0], "baseline") != h.app.rev.Parents[0] {
-		t.Errorf("target chosen = %+v", got)
-	}
-	if got := byMsg["run started"]; len(got) != 2 {
-		t.Errorf("run started %d times, want once per revision", len(got))
-	}
-	exited := byMsg["run exited"]
-	if len(exited) != 2 {
-		t.Fatalf("run exited %d times, want once per revision", len(exited))
-	}
-	for _, l := range exited {
-		if field(l, "how") != "exited 0" || field(l, "json") != "1" || field(l, "logfmt") != "1" || field(l, "plain") != "1" {
-			t.Errorf("run exited = %+v", l.Fields)
-		}
 	}
 }

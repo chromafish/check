@@ -359,7 +359,6 @@ func (a *App) openRepoOn(path, branch, notice string) {
 		}
 		return func() {
 			a.supersede()
-			a.resetSonda()
 			// A query is written in one tool's language, and means nothing,
 			// or something else, to the other's.
 			if a.repo == nil || a.repo.Info().Name != opened.Info().Name {
