@@ -4,3 +4,4 @@
 *.png
 !assets/logo.png
 .env
+.claude/
