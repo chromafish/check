@@ -265,7 +265,11 @@ func (a *App) statusLeft() string {
 	}
 	switch {
 	case a.focus == PaneRevs && !a.classic():
-		return "j/k branch or commit · enter diff · a jev · b classic · r refresh · ? keys"
+		return "j/k branch or commit · enter plan · m write plan · b diff view · ? keys"
+	case a.focus == PaneDiff && !a.classic():
+		return "j/k item · enter open in diff · m write plan · y copy as markdown · b diff view · ? keys"
+	case a.drilled:
+		return "esc or b back to the plan · j/k line · [ ] file · c comment · ? keys"
 	}
 	switch a.focus {
 	case PaneRevs:
@@ -297,7 +301,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 	}
 	// A field that submits swallows Return, so the settings sheet's fields
 	// are taken here rather than from the sheet's own keys.
-	for _, f := range []*reef.Field{a.keyField, a.cloneField} {
+	for _, f := range []*reef.Field{a.keyField, a.modelURLField, a.modelNameField, a.modelKeyField, a.cloneField} {
 		if f == nil {
 			continue
 		}
@@ -313,15 +317,6 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.cloneLink(text)
 		}
 		editing = editing || a.urlField.Focused()
-	}
-	if a.askField != nil {
-		if text, submitted := a.askField.Update(gtx); submitted {
-			if q := strings.TrimSpace(text); q != "" {
-				a.askField.Defocus(gtx)
-				a.askJev(q)
-			}
-		}
-		editing = editing || a.askField.Focused()
 	}
 	findEditing := a.updateFind(gtx)
 	fileEditing := a.updateFileFilter(gtx)
@@ -375,7 +370,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 // as a list so the filters and the help sheet cannot drift apart.
 var commandKeys = []key.Name{
 	"J", "K", "H", "L", "G", "V", "C", "D", "R", "T", "N", "P", "Y",
-	"Z", "E", "S", "X", "W", "1", "2", "F", "U", "O", "A", "B",
+	"Z", "E", "S", "X", "W", "1", "2", "F", "U", "O", "A", "B", "M",
 	// The settings sheet's own keys. Outside it they are bound to nothing, and
 	// a key bound to nothing is not a key another pane gets to reinterpret.
 	",", "-", "=",
@@ -417,11 +412,6 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		a.settingsKey(gtx, ke.Name)
 		return
 	}
-	// So is jev's sheet.
-	if a.jevOpen && a.repo != nil {
-		a.jevKey(gtx, ke)
-		return
-	}
 
 	// With no repository open, the only navigation is through the recent list.
 	if a.repo == nil {
@@ -454,11 +444,6 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 	if editing {
 		switch ke.Name {
 		case key.NameEscape:
-			if a.askField != nil && a.askField.Focused() {
-				a.askField.Defocus(gtx)
-				gtx.Execute(key.FocusCmd{Tag: nil})
-				return
-			}
 			if a.findField != nil && a.findField.Focused() {
 				a.closeFind(gtx)
 				return
@@ -483,6 +468,16 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		return
 	}
 
+	// In the plan view the keys that act on the diff's cursor would act on a
+	// diff that is not on screen.
+	if !a.classic() && a.focus == PaneDiff {
+		switch ke.Name {
+		case "C", "D", "E", "U", "O", "N", "P", "V", "\\", "[", "]", "W":
+			a.note("B opens the diff")
+			return
+		}
+	}
+
 	switch ke.Name {
 	case key.NameEscape:
 		if a.fileFilter != nil && a.fileFilter.Text() != "" {
@@ -491,6 +486,9 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		}
 		if a.findField != nil && a.findField.Text() != "" {
 			a.closeFind(gtx)
+			return
+		}
+		if !a.help && !a.notesOpen && a.undrill() {
 			return
 		}
 		a.help = false
@@ -592,7 +590,13 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		}
 		a.jumpComment(-1)
 	case "Y":
+		if !a.classic() {
+			a.copyPlan()
+			return
+		}
 		a.copyPath(gtx)
+	case "M":
+		a.writePlan()
 	case "[":
 		if shift {
 			a.stepHunk(-1)
@@ -609,16 +613,12 @@ func (a *App) command(gtx layout.Context, ke key.Event, editing bool) {
 		a.toggleSplit()
 	case "W":
 		a.toggleWrap()
-	case "A":
-		a.toggleJev()
 	case "B":
 		a.toggleClassic()
 	case "F":
 		switch {
-		case shift && a.classic():
-			a.startAsk(gtx)
 		case shift:
-			a.focusAsk(gtx)
+			a.startAsk(gtx)
 		case a.focus == PaneFiles:
 			a.startFileFilter(gtx)
 		default:
@@ -659,6 +659,10 @@ func (a *App) enter(gtx layout.Context) {
 	case PaneFiles:
 		a.focus = PaneDiff
 	case PaneDiff:
+		if !a.classic() {
+			a.enterPlan()
+			return
+		}
 		a.toggleResolvedUnderCursor()
 	}
 }
@@ -673,9 +677,9 @@ func (a *App) copyPath(gtx layout.Context) {
 
 // helpSheet lists every binding, drawn as a bordered card over the interface.
 var helpSheet = [][2]string{
-	{"A", "jev: what kind of change, and the lines to read first"},
-	{"JEV: J K / ENTER / /", "walk the lines / read one / ask a question"},
-	{"B", "brief view / classic view"},
+	{"M", "write (or rewrite) the observability plan for this change"},
+	{"Y", "plan view: copy the plan as Markdown"},
+	{"B", "plan view / diff view; from the plan, back to it"},
 	{"TAB / SHIFT-TAB", "move between panes"},
 	{"H L ← →", "focus pane left / right"},
 	{"J K ↑ ↓", "move selection"},

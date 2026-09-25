@@ -17,6 +17,8 @@ import (
 
 	"github.com/chromafish/check/internal/clone"
 	"github.com/chromafish/check/internal/jev"
+	"github.com/chromafish/check/internal/llm"
+	"github.com/chromafish/check/internal/signals"
 	"github.com/chromafish/check/internal/state"
 	"github.com/chromafish/check/internal/vcs"
 
@@ -149,6 +151,26 @@ type App struct {
 	jev        *jev.Client
 	semRunning bool
 	keyField   *reef.Field // the API key, in the settings sheet
+
+	// The model plans are written by, nil when none is named, and the
+	// settings sheet's fields for it.
+	model          *llm.Client
+	modelURLField  *reef.Field
+	modelNameField *reef.Field
+	modelKeyField  *reef.Field
+
+	// The plan view: the repository's detectors, the inventory and plan of
+	// the change on screen, and where the view's cursor is. drilled is set
+	// while the diff is open from the plan, which B or Esc comes back from.
+	detectors     []signals.Detector
+	detectorsRoot string
+	detectorsErr  string
+	inv           *invState
+	pl            *planState
+	planList      layout.List
+	planSel       int
+	planCols      int
+	drilled       bool
 	// What the last question found, as places in the document it was asked
 	// of rather than rows, which a note or an opened gap renumbers. askGen
 	// counts questions, so that the answer to one since closed or replaced
@@ -156,25 +178,6 @@ type App struct {
 	askDoc   *DiffDoc
 	askSpots []lineSpot
 	askGen   int
-
-	// The brief: the standing questions asked of the change on screen, the
-	// answers kept for changes already asked about, and how strongly they
-	// point into each file. briefSel is the hit the brief column's cursor
-	// is on.
-	brief      *brief
-	briefCache map[string]*briefResult
-	briefGen   int
-	briefSel   int
-	heat       map[string]float64
-	marks      map[markKey]bool // lines the brief points at, for the gutter
-	briefList  layout.List
-	jevOpen    bool // the jev sheet is up
-
-	// The jev bar at the head of the brief column, and the last question
-	// asked in it.
-	askField  *reef.Field
-	jevAsk    *jevAsk
-	jevAskGen int
 
 	// The review column: every branch, the one open with its commits, and
 	// which row is under review, named so that a reload can find it again.
@@ -295,12 +298,18 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 	if !a.settings.NoSemanticFind {
 		a.jev = jev.Resolve(a.settings.TypeSafeKey)
 	}
+	a.modelURLField = reef.NewField(a.settings.ModelURL)
+	a.modelURLField.Placeholder = llm.DefaultURL
+	a.modelNameField = reef.NewField(a.settings.ModelName)
+	a.modelNameField.Placeholder = "model name, e.g. qwen2.5-coder:7b"
+	a.modelKeyField = reef.NewField(a.settings.ModelKey)
+	a.modelKeyField.Placeholder = "API key, if the server wants one"
+	a.modelKeyField.Editor().Mask = '•'
+	a.model = modelFrom(a.settings)
 	a.urlField = reef.NewField("")
 	a.urlField.Placeholder = "paste a repository link — a branch link checks the branch out"
 	a.cloneField = reef.NewField(a.settings.CloneDir)
 	a.cloneField.Placeholder = shortenHome(clone.DefaultRoot())
-	a.askField = reef.NewField("")
-	a.askField.Placeholder = "ask jev about this change"
 	a.fileFilter = reef.NewField("")
 	a.fileFilter.Placeholder = "filter files"
 	a.findAt = -1
@@ -310,8 +319,8 @@ func newApp(repo vcs.Repo, dir string, store *state.Store, revset string) *App {
 	a.hoverRow = -1
 	a.revList.Axis = layout.Vertical
 	a.fileList.Axis = layout.Vertical
-	a.briefList.Axis = layout.Vertical
 	a.reviewList.Axis = layout.Vertical
+	a.planList.Axis = layout.Vertical
 	a.diffList.Axis = layout.Vertical
 	a.pairList.Axis = layout.Vertical
 	return a
@@ -550,8 +559,7 @@ func (a *App) loadFiles() {
 	a.files = nil
 	a.diff = nil
 	a.fileSel = 0
-	a.dropBrief()
-	a.dropJevAsk()
+	a.dropPlan()
 
 	a.background(func(ctx context.Context) func() {
 		files, err := a.repo.Files(ctx, spec)
@@ -646,7 +654,6 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	a.layoutNotes(gtx)
 	a.layoutHelp(gtx)
 	a.layoutSettings(gtx)
-	a.layoutJev(gtx)
 	a.ui.CornerTicks(gtx, size)
 	a.flushClipboard(gtx)
 	return layout.Dimensions{Size: size}
@@ -676,8 +683,8 @@ func (a *App) layoutBody(gtx layout.Context) {
 		})
 	}
 
-	// The brief view is two columns: what there is to review, and the diff.
-	// jev's findings float over them in a sheet of their own.
+	// The plan view is two columns: what there is to review, and the plan
+	// of the change under review. The diff is a drill-down from it.
 	if !a.classic() {
 		if a.splits.Hidden(int(PaneRevs)) {
 			rail(0, revsW, PaneRevs, "R", len(a.reviewRows()))
@@ -686,7 +693,7 @@ func (a *App) layoutBody(gtx layout.Context) {
 		}
 		a.filesColX, a.drawnFilesW = revsW+1, 0
 		a.diffColX = revsW + 1
-		column(a.diffColX, size.X-a.diffColX, PaneDiff, a.diffTitle(), a.diffControls, a.layoutDiff)
+		column(a.diffColX, size.X-a.diffColX, PaneDiff, a.planTitle(), a.planControls, a.layoutPlan)
 		reef.VLine(gtx, revsW, size.Y, a.ui.P.Rule)
 		a.splits.Handles(gtx, size, widths[:1])
 		return

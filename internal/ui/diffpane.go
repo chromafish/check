@@ -703,13 +703,8 @@ func (a *App) diffRow(gtx layout.Context, doc *DiffDoc, i int, cell image.Point,
 
 	// The affordance: a + under the pointer, or on the line the cursor is on,
 	// so the gesture is discoverable both with a mouse and without one.
-	// Otherwise the column carries jev's mark on a line its brief points at,
-	// so a finding is found by reading the diff as well as from the sheet.
-	switch {
-	case (a.hoverRow == i || cursor) && l.OldNum+l.NewNum > 0:
+	if (a.hoverRow == i || cursor) && l.OldNum+l.NewNum > 0 {
 		a.codeText(gtx, gtx.Dp(reef.Sp3), row, size.X, reef.WeightLabel, ui.P.Action, "+")
-	case a.marked(doc, i):
-		a.jevMark(gtx, gtx.Dp(reef.Sp3), row)
 	}
 
 	// A hairline separates the numbers from the code, the way a ruled margin
@@ -1497,10 +1492,6 @@ func (a *App) diffControls(gtx layout.Context) {
 	}
 	rightX -= a.controlRight(gtx, rightX, size.Y, tagWrap, wrapLabel, wc, a.toggleWrap) + gtx.Dp(reef.Sp3)
 
-	// jev's sheet is one key away, and the control says what is in it.
-	if label, c := a.jevControl(); label != "" {
-		a.controlRight(gtx, rightX, size.Y, tagJev, label+"  A", c, a.toggleJev)
-	}
 }
 
 // toggleSplit swaps the unified and two-column views. The row position carries

@@ -2,7 +2,7 @@
 :toc: macro
 :toclevels: 3
 
-Status: removed +
+Status: superseded by link:spec/0003.check.observability-plan.adoc[0003 Observability Plan]; sonda was removed +
 Date: 2026-09-03
 
 toc::[]

@@ -129,12 +129,6 @@ func (a *App) fileRow(gtx layout.Context, i int) {
 		}
 		rightX -= a.cellTextRight(gtx, rightX, size.Y, reef.WeightLabel, c, "*"+badge) + gtx.Dp(reef.Sp4)
 	}
-	// How strongly jev's brief points into the file, as a bar of up to four
-	// cells: the files worth opening first stand out before any is opened.
-	if h := a.heat[f.Path]; h > 0 {
-		cells := clamp(int(h*4+0.5), 1, 4)
-		rightX -= a.cellTextRight(gtx, rightX, size.Y, font.Normal, ui.P.Accent, strings.Repeat("█", cells)) + gtx.Dp(reef.Sp4)
-	}
 	if f.Added > 0 || f.Removed > 0 {
 		counts := fmt.Sprintf("+%d −%d", f.Added, f.Removed)
 		rightX -= a.cellTextRight(gtx, rightX, size.Y, font.Normal, muted, counts) + gtx.Dp(reef.Sp4)

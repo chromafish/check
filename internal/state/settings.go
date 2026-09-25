@@ -41,6 +41,13 @@ type Settings struct {
 	// is carried through every save rather than being typed into the
 	// interface. CHECK_TYPESAFE_KEY overrides it for a single run.
 	TypeSafeKey string `json:"typesafe_key,omitempty"`
+	// ModelURL, ModelName and ModelKey name the OpenAI-compatible model a
+	// plan is written by. An empty URL is a local Ollama server; an empty
+	// name means no model, and no plans. CHECK_MODEL_URL, CHECK_MODEL and
+	// CHECK_MODEL_KEY override them for a single run.
+	ModelURL  string `json:"model_url,omitempty"`
+	ModelName string `json:"model_name,omitempty"`
+	ModelKey  string `json:"model_key,omitempty"`
 }
 
 // ThemesDir is where colour schemes are read from: base16 files, in the same

@@ -17,6 +17,7 @@ import (
 
 	"github.com/chromafish/check/internal/clone"
 	"github.com/chromafish/check/internal/jev"
+	"github.com/chromafish/check/internal/llm"
 	"github.com/chromafish/check/internal/state"
 
 	"github.com/chromafish/check/reef"
@@ -318,6 +319,12 @@ func (a *App) settingsField(list int) *reef.Field {
 	switch list {
 	case listKey:
 		return a.keyField
+	case listModelURL:
+		return a.modelURLField
+	case listModelName:
+		return a.modelNameField
+	case listModelKey:
+		return a.modelKeyField
 	case listClone:
 		return a.cloneField
 	}
@@ -326,7 +333,7 @@ func (a *App) settingsField(list int) *reef.Field {
 
 // focusedSettingsField is the field with the caret, and its section.
 func (a *App) focusedSettingsField() (*reef.Field, int) {
-	for _, list := range []int{listKey, listClone} {
+	for _, list := range []int{listKey, listModelURL, listModelName, listModelKey, listClone} {
 		if f := a.settingsField(list); f != nil && f.Focused() {
 			return f, list
 		}
@@ -337,7 +344,41 @@ func (a *App) focusedSettingsField() (*reef.Field, int) {
 // adoptFields records whatever the sheet's fields hold.
 func (a *App) adoptFields() {
 	a.adoptKey()
+	a.adoptModel()
 	a.adoptCloneDir()
+}
+
+// modelFrom is the client for the model the settings name, with the
+// environment laid over them, or nil when no model is named.
+func modelFrom(s state.Settings) *llm.Client {
+	c := llm.Resolve(llm.Config{BaseURL: s.ModelURL, Key: s.ModelKey, Model: s.ModelName})
+	if !c.Ready() {
+		return nil
+	}
+	return llm.New(c)
+}
+
+// adoptModel records the model fields and rebuilds the client, so a model
+// named in the sheet is usable at once.
+func (a *App) adoptModel() {
+	if a.modelURLField == nil {
+		return
+	}
+	url := strings.TrimSpace(a.modelURLField.Text())
+	name := strings.TrimSpace(a.modelNameField.Text())
+	key := strings.TrimSpace(a.modelKeyField.Text())
+	if url == a.settings.ModelURL && name == a.settings.ModelName && key == a.settings.ModelKey {
+		return
+	}
+	a.settings.ModelURL, a.settings.ModelName, a.settings.ModelKey = url, name, key
+	a.saveSettings()
+	a.model = modelFrom(a.settings)
+	a.planOnScreen()
+	if a.model == nil {
+		a.note("no model named, plans are off")
+		return
+	}
+	a.note("plans are written by %s", a.model.Model())
 }
 
 // adoptCloneDir records where pasted links are cloned. An empty field is the
@@ -399,6 +440,9 @@ const (
 	listThemes = iota
 	listFamilies
 	listKey
+	listModelURL
+	listModelName
+	listModelKey
 	listClone
 	numLists
 )
@@ -429,7 +473,7 @@ func (a *App) layoutSettings(gtx layout.Context) {
 	// The sheet is sized from its contents, and the two lists are the parts of
 	// it that give way when the window is short.
 	fieldH := ui.FieldHeight(gtx)
-	fixed := row*10 + stepH + fieldH*2 + code*2 + half*7 + pad*2
+	fixed := row*12 + stepH + fieldH*5 + code*2 + half*8 + pad*2
 	themes := clamp(len(a.schemes), 1, 6)
 	faces := clamp(len(a.families), 1, 10)
 	for faces+themes > 2 && fixed+row*(faces+themes) > size.Y-gtx.Dp(48) {
@@ -544,7 +588,26 @@ func (a *App) layoutSettings(gtx layout.Context) {
 		})
 	}
 	ly += fieldH
-	label(ly, ui.P.Faint, "with a TypeSafe key, jev briefs every change as it opens")
+	label(ly, ui.P.Faint, "with a TypeSafe key, jev triages a change before the model reads it")
+	ly += row
+
+	ly += half
+	label(ly, ui.P.Faint, "MODEL")
+	if a.model == nil {
+		note(ly, "none · plans are off")
+	} else {
+		note(ly, a.model.Model())
+	}
+	ly += row
+	for _, f := range []*reef.Field{a.modelURLField, a.modelNameField, a.modelKeyField} {
+		if f != nil {
+			fit(gtx, image.Pt(x+pad, ly), image.Pt(w-pad*2, fieldH), func(gtx layout.Context) {
+				f.Layout(gtx, ui.Theme)
+			})
+		}
+		ly += fieldH
+	}
+	label(ly, ui.P.Faint, "any OpenAI-compatible server: Ollama, llama.cpp, LM Studio, a hosted API")
 	ly += row
 
 	ly += half

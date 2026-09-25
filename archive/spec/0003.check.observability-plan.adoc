@@ -1,0 +1,140 @@
+= Observability Plan
+:revdate: 2026-09-25
+:status: Draft
+:toc:
+
+== Context
+
+A diff says what the text of a program became. The question a change raises
+once it ships is a different one: how will we see, in production, that it
+works, and that it has not broken something? Check answers that question for
+the change under review, and the diff becomes where its answers point.
+
+== Scope
+
+* Finding what a change does to the program's telemetry, and where it runs
+  without any.
+* Writing, on request, a plan for observing the change in production, checked
+  against what the code actually contains.
+
+== Abstractions
+
+=== Signal
+
+One place in the source that emits telemetry: a span, a metric, a log line, an
+event, an error report or a feature flag read. A signal has a kind, a name (the
+span or metric name, or the log message), the detector that found it, and a
+file and line.
+
+=== Detector
+
+Declarative data that finds signals: a name, a kind, the file extensions it
+applies to, and a regular expression whose first capture group is the signal's
+name. Check ships detectors for common libraries — OpenTelemetry, Prometheus
+clients, Rust `tracing`, `log` and `metrics`, Go `slog`, `log` and zap, Python
+`logging`, JavaScript pino, winston and console, Sentry, OpenFeature and
+LaunchDarkly. A repository adds its own in `check.toml`.
+
+=== Inventory
+
+What a change does to observability, read from both sides of every changed
+file: signals added, removed or altered by the change; existing signals near
+the changed code; and dark hunks, changed code with no signal near it.
+
+=== Triage
+
+jev's reading of each hunk: whether it changes runtime behaviour on a
+production path, and which kind of operation it affects. It decides what the
+model is shown. Triage is optional and runs only with a TypeSafe key.
+
+=== Model
+
+Any OpenAI-compatible chat completions endpoint: a base URL, a key and a model
+name. Local servers and hosted ones are the same to Check.
+
+=== Plan
+
+What to watch once the change ships: a summary; the existing signals that
+should move and in which direction; the gaps, where the change runs unobserved,
+each with a suggested signal; the conditions that would mean a regression; and
+a rollout risk with advice.
+
+=== Backend
+
+Where telemetry is read from once a change is deployed. It is an interface
+only: a backend answers a query for a signal over a time window. Integrations
+implement it.
+
+== Mechanics
+
+=== Scanning
+
+The inventory is built whenever a change is opened, without asking anything of
+anyone. Both sides of each changed file are read from the repository and every
+detector that applies to the file is run over them. A signal on a changed line
+is added, removed or altered; a signal within a few lines of a hunk is nearby;
+a hunk with neither is dark.
+
+=== Triage
+
+With a TypeSafe key, the hunks are sent to jev in one batched request per
+budget-sized part of the change. A hunk jev judges tests, tooling or
+documentation is left out of what the model reads.
+
+=== Planning
+
+The plan is written only when asked for. The model is given the change's
+message, the inventory and the triaged hunks, cut to a character budget, and
+asked for the plan as JSON matching a schema. A server that does not support
+schema-constrained output is asked for a JSON object with the schema in the
+prompt, and an answer that does not parse is sent back once for repair.
+
+What the model returns is checked before it is shown. A signal it names must be
+in the inventory, or be marked as proposed. A place it names must be inside the
+change. Anything else is dropped and counted, so that a small model cannot
+report telemetry the code does not have.
+
+=== Configuration
+
+The model's base URL, key and name are preferences, as described in
+link:0001.check.local-config.adoc[Local Config], and `CHECK_MODEL_URL`,
+`CHECK_MODEL_KEY` and `CHECK_MODEL` override them for a single run. The default
+base URL is a local Ollama server. Detectors a repository declares are read
+from its `check.toml`.
+
+=== Reading
+
+The plan is the main screen. The inventory is shown at once; the plan's
+sections follow once it has been written. Every item that names a place opens
+the diff there, and the plan can be copied as Markdown for a pull request.
+
+== Data Model
+
+A repository's own detectors, in `check.toml`:
+
+[source,toml]
+----
+[[signal]]
+name = "audit"
+kind = "event"
+extensions = [".rs"]
+pattern = 'audit::record\(\s*"([^"]+)"'
+----
+
+A plan is kept on disk beside the review state, one file per change, named by
+the commit it was written for and the model that wrote it:
+
+[source,json]
+----
+{
+  "commit": "eb80a805…",
+  "model": "qwen2.5-coder:7b",
+  "summary": "…",
+  "watch": [{"signal": "repack_total", "expect": "rise", "why": "…"}],
+  "gaps": [{"path": "src/store.rs", "line": 42, "unseen": "…",
+            "suggest": {"kind": "span", "name": "consolidate", "snippet": "…"}}],
+  "regressions": [{"signal": "consolidate", "condition": "…"}],
+  "rollout": {"risk": "medium", "advice": "…"},
+  "dropped": 1
+}
+----

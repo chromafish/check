@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	gioui.org v0.10.2
+	github.com/BurntSushi/toml v1.6.0
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/bytesparadise/libasciidoc v0.8.0
 	github.com/go-text/typesetting v0.3.4

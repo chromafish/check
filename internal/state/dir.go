@@ -28,6 +28,17 @@ func dir() (string, error) {
 	return path, nil
 }
 
+// PlansDir is where written plans are kept, one file per change and model,
+// so that a plan is paid for once.
+func PlansDir() (string, error) {
+	d, err := dir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(d, "plans")
+	return path, os.MkdirAll(path, 0o755)
+}
+
 // writeJSON writes a value to a file in the application's own directory,
 // atomically: the bytes land in a temporary file that is then renamed over the
 // old one, so a crash part way through leaves the previous file intact rather

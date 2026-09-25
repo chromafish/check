@@ -48,15 +48,17 @@ func commitKey(branch string, rev vcs.Revision) string {
 }
 
 // classic reports whether the three-column revision view is the one on screen.
-func (a *App) classic() bool { return a.settings.Classic }
+func (a *App) classic() bool { return a.settings.Classic || a.drilled }
 
 // toggleClassic moves between the brief and the classic view, and records the
 // choice. Whatever is under review stays under review.
 func (a *App) toggleClassic() {
+	if a.undrill() {
+		return
+	}
 	a.settings.Classic = !a.settings.Classic
 	a.saveSettings()
 	a.swapFractions()
-	a.jevOpen = false
 	if a.classic() {
 		a.note("classic view")
 		return

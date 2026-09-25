@@ -20,8 +20,10 @@ import (
 	"gioui.org/unit"
 
 	"github.com/chromafish/check/internal/jev"
+	"github.com/chromafish/check/internal/llm"
 	"github.com/chromafish/check/internal/repo"
 	"github.com/chromafish/check/internal/state"
+	"github.com/chromafish/check/internal/vcs"
 
 	"github.com/chromafish/check/reef"
 )
@@ -74,8 +76,29 @@ func openHarnessView(t *testing.T, dir string, brief bool) *harness {
 	// Review state must not leak into the real one, or between tests.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	// Nor may a key in the environment send a test's diff to the service.
+	return openWith(t, dir, repo, brief)
+}
+
+// openHarnessViewKeeping opens a second window on a repository in the brief
+// view, keeping what the test's first window left in the configuration
+// directory.
+func openHarnessViewKeeping(t *testing.T, dir string) *harness {
+	t.Helper()
+	r, err := repo.Open(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("opening the repository: %v", err)
+	}
+	return openWith(t, dir, r, true)
+}
+
+func openWith(t *testing.T, dir string, repo vcs.Repo, brief bool) *harness {
+	t.Helper()
+	// Nor may a key in the environment send a test's diff to the service,
+	// or a model named there be asked anything.
 	t.Setenv(jev.EnvKey, "")
+	t.Setenv(llm.EnvModel, "")
+	t.Setenv(llm.EnvKey, "")
+	t.Setenv(llm.EnvURL, "")
 	// Most of what is tested is the classic view's; the brief's own tests
 	// open the default instead.
 	if !brief {

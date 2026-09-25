@@ -315,6 +315,8 @@ func (a *App) loadDiff() {
 				a.rebuildRows()
 			}
 			doc.logParsed()
+			// The whole change is in, so its telemetry can be read.
+			a.startInventory()
 			a.lightFile(a.fileSel)
 			if err := cmp.Or(serr, cerr); err != nil {
 				if stalled.Load() {
@@ -324,8 +326,6 @@ func (a *App) loadDiff() {
 				a.fail(err)
 				return
 			}
-			// The whole change is in, so it can be read for the brief.
-			a.startBrief()
 		}
 	})
 }
