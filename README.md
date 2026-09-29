@@ -8,6 +8,8 @@ A review tool. We are all making one, right?
 
 Built and tested on macOS.
 
+Reach me by email at [self@chromafish.net](mailto:self@chromafish.net).
+
 ## Licence
 
 MIT, except the IBM Plex faces in `reef/plex/`, which are under the SIL Open
